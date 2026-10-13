@@ -242,11 +242,11 @@ fn status(shared: State<Shared>, app: AppHandle) -> serde_json::Value {
     let status = shared.status.lock().unwrap().clone();
     serde_json::json!({
         "status": status,
+        "server": config.server(),
         "email": config.email,
         "folder": config.folder.unwrap_or_else(|| default_folder(&app)),
         "excluded": config.excluded,
         "paused": config.paused,
-        "server": config.server(),
         "version": env!("CARGO_PKG_VERSION"),
     })
 }
@@ -350,11 +350,11 @@ fn sync_now(shared: State<Shared>) {
 #[tauri::command]
 fn open_folder(app: AppHandle, shared: State<Shared>, path: Option<String>) {
     let folder = shared.config.lock().unwrap().folder.clone().unwrap_or_else(|| default_folder(&app));
+    let _ = std::fs::create_dir_all(&folder);
     let target = match path {
         Some(p) => folder.join(p),
         None => folder,
     };
-    let _ = std::fs::create_dir_all(&folder);
     let _ = app.opener().open_path(target.to_string_lossy(), None::<&str>);
 }
 
