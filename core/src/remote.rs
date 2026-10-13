@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
 // What GET /api/v1/sync/state returns: everything the user may mirror, nothing else.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct State {
     pub projects: Vec<Project>,
