@@ -1,3 +1,5 @@
 [workspace]
-members = ["core"]
+members = ["core", "app/src-tauri"]
+# The app needs webkit2gtk on Linux; plain `cargo test` covers the core without it
+default-members = ["core"]
 resolver = "2"

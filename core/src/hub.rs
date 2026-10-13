@@ -136,6 +136,11 @@ impl HttpHub {
         checked(response).map(|_| ())
     }
 
+    // What's new in the user's projects, for the popover; passed on as the API sends it
+    pub fn activity(&self, limit: u32) -> Result<serde_json::Value> {
+        parse(self.get(&format!("/activity?limit={limit}"))?)
+    }
+
     fn upload_url(&self, path: &str, file: &Path) -> Result<UploadUrl> {
         let name = file_name(file);
         let body = json!({ "fileName": name, "mimeType": mime_of(&name), "fileSize": file.metadata()?.len() });

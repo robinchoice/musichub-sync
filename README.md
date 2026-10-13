@@ -17,7 +17,7 @@ Keeps a folder on your computer in sync with [Music Hub](https://hub.pleasance.o
 - Deleting a file moves it into the hub's trash; what's deleted in the hub goes into the system trash.
 - Only audio (`wav mp3 flac aiff aif aifc`) syncs. Everything else stays local.
 
-Status: early. The sync core (`core/`) plans what to do; the desktop app (Tauri 2, tray with a small popover) follows.
+Status: early, no release yet. `core/` plans and carries out each sync round, `app/` is the tray app (Tauri 2, Svelte) with login, folder and project choice and a popover with what's new in your projects.
 
 ## License
 
