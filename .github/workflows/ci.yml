@@ -80,10 +80,13 @@ jobs:
       - name: Check signature and notarization
         if: runner.os == 'macOS' && github.event_name != 'pull_request'
         run: |
-          app="target/universal-apple-darwin/release/bundle/macos/Music Hub Sync.app"
+          dmg=$(ls target/universal-apple-darwin/release/bundle/dmg/*.dmg)
+          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/dmg" "$dmg"
+          app="$RUNNER_TEMP/dmg/Music Hub Sync.app"
           codesign --verify --deep --strict "$app"
           spctl --assess --type execute --verbose "$app"
           xcrun stapler validate "$app"
+          hdiutil detach "$RUNNER_TEMP/dmg"
       - uses: actions/upload-artifact@v4
         with:
           name: musichub-sync-${{ runner.os }}
