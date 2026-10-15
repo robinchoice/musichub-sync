@@ -17,7 +17,7 @@ The Tauri shell (`app/src-tauri`) only compiles in CI or where webkit2gtk is ins
 
 - A push to `main` runs `ci.yml`: core tests, then the app for macOS (universal dmg), Windows (msi) and Linux (AppImage, deb) as artifacts. Verify: `gh run watch`.
 - A tag `v*` also creates a GitHub prerelease with these files. Releases only on Robin's go; the tag message body becomes the release notes (German).
-- macOS builds are signed with the Developer ID certificate of team T2F442364K and notarized with the App Store Connect key (secrets `MAC_CERTIFICATE`, `MAC_CERTIFICATE_PASSWORD`, `ASC_KEY_P8`, variables `ASC_KEY_ID`, `ASC_ISSUER_ID`; copies from `~/.secrets`, see infra.md). The CI checks signature and notarization. Windows builds are still unsigned, SmartScreen warns.
+- macOS builds are signed with the Developer ID certificate of team T2F442364K and notarized with the App Store Connect key (secrets `MAC_CERTIFICATE`, `MAC_CERTIFICATE_PASSWORD`, `ASC_KEY_P8`, variables `ASC_KEY_ID`, `ASC_ISSUER_ID`; copies from `~/.secrets`, see infra.md). The CI checks signature and notarization. Windows builds stay unsigned for now (SmartScreen warns); after the first release apply to SignPath Foundation (free for OSS, Robin applies himself).
 
 ## Pitfalls
 
