@@ -201,7 +201,7 @@ fn setup(hub: FakeHub) -> Setup {
 
 impl Setup {
     fn round(&mut self) -> musichub_sync_core::run::Report {
-        self.syncer.run(&[], later()).expect("round")
+        self.syncer.run(&[], later(), || false).expect("round")
     }
     fn read(&self, path: &str) -> Vec<u8> {
         fs::read(self.root.join(path)).unwrap()
@@ -280,7 +280,7 @@ fn a_failed_download_after_moving_aside_fetches_again_instead_of_trashing() {
     std::thread::sleep(std::time::Duration::from_millis(1100));
     s.write(DRUMS, b"drums, my cut");
     *s.syncer.hub.downloads_failing.borrow_mut() = 1;
-    assert!(matches!(s.syncer.run(&[], later()), Err(Error::Network(_))));
+    assert!(matches!(s.syncer.run(&[], later(), || false), Err(Error::Network(_))));
     assert_eq!(s.read("Tiefgang/Nachtbus/Stems/Drums (lokal).wav"), b"drums, my cut");
     s.round();
     assert_eq!(s.read(DRUMS), b"drums, hub cut");
@@ -294,7 +294,7 @@ fn a_crash_mid_round_does_not_trash_the_version_saved_over_before_it() {
     std::thread::sleep(std::time::Duration::from_millis(1100));
     s.write(V1, b"mix one, louder");
     s.write("Tiefgang/Nachtbus/Versionen/Nachtbus Final.wav", b"mix two");
-    let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.syncer.run(&[], later())));
+    let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.syncer.run(&[], later(), || false)));
     assert!(crashed.is_err());
     // The app starts again
     let hub = std::mem::replace(&mut s.syncer, Syncer::new(FakeHub::default(), &s.root, &s._dir.path().join("index.json"))).hub;
@@ -304,6 +304,25 @@ fn a_crash_mid_round_does_not_trash_the_version_saved_over_before_it() {
     let ids: Vec<String> = s.syncer.hub.versions().iter().map(|v| v.id.clone()).collect();
     assert_eq!(ids, vec!["v2", "v4", "v5"], "{ids:?}");
     assert_eq!(s.read("Tiefgang/Nachtbus/Versionen/v2 Rough Mix.wav"), b"mix one, louder");
+}
+
+#[test]
+fn a_stopped_round_ends_after_the_current_action_and_the_next_one_finishes() {
+    let mut s = setup(FakeHub::new());
+    let asked = std::cell::Cell::new(0);
+    let report = s
+        .syncer
+        .run(&[], later(), || {
+            asked.set(asked.get() + 1);
+            asked.get() > 1
+        })
+        .unwrap();
+    assert_eq!(report.downloaded.len(), 1);
+    let report = s.round();
+    assert_eq!(report.downloaded.len(), 1);
+    assert_eq!(s.read(V1), b"mix one");
+    assert_eq!(s.read(DRUMS), b"drums");
+    s.settled();
 }
 
 #[test]
@@ -451,7 +470,7 @@ fn a_project_named_like_an_excluded_one_stays_out_of_its_folder() {
     hub.add_version(&t, b"twin mix", Some("Rough Mix"), None);
     let mut s = setup(hub);
     s.write(V1, b"my own file");
-    let report = s.syncer.run(&[twin], later()).unwrap();
+    let report = s.syncer.run(&[twin], later(), || false).unwrap();
     assert_eq!(s.read(V1), b"my own file");
     assert!(report.downloaded.is_empty());
     assert!(report.skipped.contains(&("Tiefgang".into(), SkipReason::Collision)), "{report:?}");
@@ -460,10 +479,10 @@ fn a_project_named_like_an_excluded_one_stays_out_of_its_folder() {
 #[test]
 fn an_excluded_project_is_left_alone() {
     let mut s = setup(FakeHub::new());
-    s.syncer.run(&["p1".into()], later()).unwrap();
+    s.syncer.run(&["p1".into()], later(), || false).unwrap();
     assert!(!s.exists(V1));
     s.write("Tiefgang/Notiz.wav", b"x");
-    s.syncer.run(&["p1".into()], later()).unwrap();
+    s.syncer.run(&["p1".into()], later(), || false).unwrap();
     assert_eq!(s.syncer.hub.state.borrow().projects.len(), 1);
     assert!(s.exists("Tiefgang/Notiz.wav"));
 }

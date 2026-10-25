@@ -43,8 +43,9 @@ impl<H: Hub> Syncer<H> {
         self.state.as_ref()
     }
 
-    // Projects in `excluded` stay out: neither their files nor the hub's are touched
-    pub fn run(&mut self, excluded: &[String], now: u64) -> Result<Report> {
+    // Projects in `excluded` stay out: neither their files nor the hub's are touched.
+    // `stop` is asked before every action; once it says yes the round ends there, like after a lost connection
+    pub fn run(&mut self, excluded: &[String], now: u64, stop: impl Fn() -> bool) -> Result<Report> {
         if let Some(state) = self.hub.state()? {
             self.state = Some(state);
         }
@@ -70,6 +71,9 @@ impl<H: Hub> Syncer<H> {
         let save = |entries: &[IndexEntry]| index::save(&self.index_file, &origin, &self.root, &[entries, &kept].concat());
         let mut result = Ok(());
         for action in plan(&remote, &run.entries, &disk, now) {
+            if stop() {
+                break;
+            }
             let path = action_path(&action).to_string();
             match run.apply(action) {
                 Ok(()) => {}

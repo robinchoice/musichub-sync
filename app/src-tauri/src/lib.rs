@@ -24,7 +24,7 @@ const DEFAULT_SERVER: &str = "https://hub.pleasance.org";
 const ROUND: Duration = Duration::from_secs(20);
 const KEYRING_SERVICE: &str = "org.pleasance.musichubsync";
 
-#[derive(Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct Config {
     server: Option<String>,
@@ -161,7 +161,9 @@ fn sync_loop(app: AppHandle, kicks: Receiver<()>) {
                 }
                 let (_, _, _, s) = syncer.as_mut().unwrap();
                 set_status(&app, |st| st.state = "syncing".into());
-                let result = s.run(&config.excluded, now());
+                // Any setting changed in the popover (pause, folder, projects, logout) ends the round after the current
+                // action; its kick starts the next one right away with the new settings
+                let result = s.run(&config.excluded, now(), || *app.state::<Shared>().config.lock().unwrap() != config);
                 let projects = s
                     .state()
                     .map(|state| {
