@@ -55,6 +55,28 @@ pub fn is_noise(file_name: &str) -> bool {
         || lower == "thumbs.db"
 }
 
+// "Bass.wav" → "Bass (lokal).wav", or "Bass (lokal 2).wav" and so on when that name is taken: a copy never replaces another
+pub fn aside_path(path: &str, taken: impl Fn(&str) -> bool) -> String {
+    let (stem, ext) = match path.rsplit_once('.') {
+        Some((stem, ext)) if !stem.ends_with('/') => (stem, format!(".{ext}")),
+        _ => (path, String::new()),
+    };
+    let mut n = 1;
+    loop {
+        let candidate = if n == 1 { format!("{stem} (lokal){ext}") } else { format!("{stem} (lokal {n}){ext}") };
+        if !taken(&candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+// The user's own copy next to the hub's file; it never goes up
+pub fn is_aside(file_name: &str) -> bool {
+    let base = base_name(file_name);
+    base.ends_with(" (lokal)") || base.rsplit_once(" (lokal ").is_some_and(|(_, rest)| rest.strip_suffix(')').is_some_and(|n| n.parse::<u32>().is_ok()))
+}
+
 pub fn label_of(version: &Version) -> String {
     match &version.label {
         Some(label) if !label.trim().is_empty() => label.trim().to_string(),
@@ -127,6 +149,16 @@ mod tests {
         assert!(is_noise("~$mix.wav"));
         assert!(is_noise("bounce.wav.tmp"));
         assert!(!is_noise("Drums.wav"));
+    }
+
+    #[test]
+    fn copies_put_aside_are_recognised() {
+        assert_eq!(aside_path("Tiefgang/Nachtbus/Stems/Bass.wav", |_| false), "Tiefgang/Nachtbus/Stems/Bass (lokal).wav");
+        assert_eq!(aside_path("Bass.wav", |p| p == "Bass (lokal).wav"), "Bass (lokal 2).wav");
+        assert!(is_aside("Bass (lokal).wav"));
+        assert!(is_aside("Bass (lokal 12).aiff"));
+        assert!(!is_aside("Bass (lokal x).wav"));
+        assert!(!is_aside("Lokal.wav"));
     }
 
     #[test]

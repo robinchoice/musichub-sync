@@ -23,6 +23,9 @@ struct FakeHub {
     // Versions only the owner may delete
     owner: bool,
     origin: String,
+    // The process dies in the n-th upload, like a crash mid-round
+    crash_at_upload: Option<u32>,
+    uploads: RefCell<u32>,
 }
 
 fn sha(bytes: &[u8]) -> String {
@@ -114,6 +117,10 @@ impl Hub for FakeHub {
     }
 
     fn upload_version(&self, track_id: &str, file: &Path, label: Option<&str>, _parent: Option<&str>, _sha: &str) -> Result<Version> {
+        *self.uploads.borrow_mut() += 1;
+        if Some(*self.uploads.borrow()) == self.crash_at_upload {
+            panic!("crash");
+        }
         let name = file.file_name().unwrap().to_string_lossy().into_owned();
         Ok(self.add_version(track_id, &fs::read(file)?, label, Some(&name)))
     }
@@ -240,6 +247,42 @@ fn saving_over_a_version_adds_one_and_the_old_one_comes_back() {
     s.round();
     assert_eq!(s.read(V1), b"mix one");
     s.settled();
+}
+
+#[test]
+fn a_stem_changed_here_and_in_the_hub_comes_down_and_the_local_one_lies_next_to_it() {
+    let mut s = setup(FakeHub::new());
+    s.round();
+    s.syncer.hub.replace_stem("t1", "s3", &{ let f = s._dir.path().join("hub.wav"); fs::write(&f, b"drums, hub cut").unwrap(); f }, "x").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    s.write(DRUMS, b"drums, my cut");
+    let report = s.round();
+    assert_eq!(s.read(DRUMS), b"drums, hub cut");
+    assert_eq!(s.read("Tiefgang/Nachtbus/Stems/Drums (lokal).wav"), b"drums, my cut");
+    assert_eq!(report.problems[0].path, "Tiefgang/Nachtbus/Stems/Drums (lokal).wav");
+    assert!(report.skipped.is_empty());
+    let report = s.round();
+    assert_eq!(report.skipped, vec![("Tiefgang/Nachtbus/Stems/Drums (lokal).wav".to_string(), SkipReason::LocalOnly)]);
+    assert!(report.uploaded.is_empty() && report.problems.is_empty(), "{report:?}");
+}
+
+#[test]
+fn a_crash_mid_round_does_not_trash_the_version_saved_over_before_it() {
+    let mut s = setup(FakeHub { crash_at_upload: Some(2), ..FakeHub::new() });
+    s.round();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    s.write(V1, b"mix one, louder");
+    s.write("Tiefgang/Nachtbus/Versionen/Nachtbus Final.wav", b"mix two");
+    let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.syncer.run(&[], later())));
+    assert!(crashed.is_err());
+    // The app starts again
+    let hub = std::mem::replace(&mut s.syncer, Syncer::new(FakeHub::default(), &s.root, &s._dir.path().join("index.json"))).hub;
+    s.syncer.hub = FakeHub { crash_at_upload: None, ..hub };
+    s.round();
+    // The first version (id v2) had its file renamed to "v2 Rough Mix.wav" before the crash; that must not count as deleted
+    let ids: Vec<String> = s.syncer.hub.versions().iter().map(|v| v.id.clone()).collect();
+    assert_eq!(ids, vec!["v2", "v4", "v5"], "{ids:?}");
+    assert_eq!(s.read("Tiefgang/Nachtbus/Versionen/v2 Rough Mix.wav"), b"mix one, louder");
 }
 
 #[test]

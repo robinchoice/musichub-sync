@@ -6,8 +6,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::hub::{Error, Hub, Result};
-use crate::layout::{safe_name, stem_file, stem_name, version_file, STEMS, VERSIONS};
-use crate::plan::{aside_path, plan, Action, IndexEntry, Kind, ProjectRef, SkipReason, TrackRef};
+use crate::layout::{aside_path, safe_name, stem_file, stem_name, version_file, STEMS, VERSIONS};
+use crate::plan::{plan, Action, IndexEntry, Kind, ProjectRef, SkipReason, TrackRef};
 use crate::{index, remote, scan};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -65,6 +65,9 @@ impl<H: Hub> Syncer<H> {
 
         let mut run = Run { hub: &self.hub, root: &self.root, remote: &remote, entries, report: Report::default(), projects: HashMap::new(), tracks: HashMap::new() };
         run.report.skipped.extend(shadowed.iter().map(|p| (safe_name(&p.name), SkipReason::Collision)));
+        // Written after every action: a crash mid-round must not leave an index that calls a renamed file deleted
+        let origin = self.hub.origin();
+        let save = |entries: &[IndexEntry]| index::save(&self.index_file, &origin, &self.root, &[entries, &kept].concat());
         let mut result = Ok(());
         for action in plan(&remote, &run.entries, &disk, now) {
             let path = action_path(&action).to_string();
@@ -76,17 +79,15 @@ impl<H: Hub> Syncer<H> {
                 }
                 Err(e) => run.report.problems.push(Problem { path, message: e.to_string() }),
             }
+            save(&run.entries)?;
         }
 
         // Forget what is gone on both sides
         let ids: Vec<&str> = remote.projects.iter().flat_map(|p| &p.tracks).flat_map(|t| t.versions.iter().map(|v| v.id.as_str()).chain(t.stems.iter().map(|s| s.id.as_str()))).collect();
         let root = self.root.clone();
         run.entries.retain(|e| ids.contains(&e.remote_id.as_str()) || root.join(&e.path).exists());
-        let report = run.report;
-        let mut entries = run.entries;
-        entries.extend(kept);
-        index::save(&self.index_file, &self.hub.origin(), &self.root, &entries)?;
-        result.map(|()| report)
+        save(&run.entries)?;
+        result.map(|()| run.report)
     }
 }
 
@@ -321,7 +322,9 @@ impl<H: Hub> Run<'_, H> {
             }
             Action::KeepAside { path, to, kind, remote_id } => {
                 self.move_aside(&path, &to)?;
-                self.download(&path, kind, &remote_id)
+                self.download(&path, kind, &remote_id)?;
+                self.report.problems.push(Problem { path: to, message: "Deine Fassung liegt daneben, die Datei aus dem Hub ist aktuell".into() });
+                Ok(())
             }
             Action::Skip { path, reason } => {
                 if reason == SkipReason::Busy {

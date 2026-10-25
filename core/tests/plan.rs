@@ -131,6 +131,28 @@ fn saving_over_a_stem_gives_it_a_new_file() {
 }
 
 #[test]
+fn a_stem_changed_on_both_sides_keeps_the_hubs_file_and_puts_the_local_one_aside() {
+    let (index, mut disk) = synced();
+    disk[1] = file(DRUMS, 40, OLD + 60, Some("drums-cut"));
+    let mut state = hub();
+    state.projects[0].tracks[0].stems[0] = stem("s1", "Drums", 45, "drums-2");
+    assert_eq!(
+        plan(&state, &index, &disk, NOW),
+        vec![Action::KeepAside { path: DRUMS.into(), to: "Tiefgang/Nachtbus/Stems/Drums (lokal).wav".into(), kind: Kind::Stem, remote_id: "s1".into() }]
+    );
+}
+
+#[test]
+fn copies_put_aside_stay_local() {
+    let (index, mut disk) = synced();
+    disk.push(file("Tiefgang/Nachtbus/Stems/Drums (lokal).wav", 70, OLD, None));
+    assert_eq!(
+        plan(&hub(), &index, &disk, NOW),
+        vec![Action::Skip { path: "Tiefgang/Nachtbus/Stems/Drums (lokal).wav".into(), reason: SkipReason::LocalOnly }]
+    );
+}
+
+#[test]
 fn a_stem_replaced_in_the_hub_comes_down_again() {
     let (index, disk) = synced();
     let mut state = hub();

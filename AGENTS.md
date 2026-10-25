@@ -22,7 +22,7 @@ The Tauri shell (`app/src-tauri`) only compiles in CI or where webkit2gtk is ins
 ## Pitfalls
 
 - `core::plan` is pure: remote state, last-synced index and disk scan in, actions out. Keep IO out of it so every folder rule stays a unit test in `core/tests/plan.rs`.
-- Folder and file names come from `core::layout`. Changing a name rule renames files on every user's disk on the next sync.
+- Folder and file names come from `core::layout`. Changing a name rule renames files on every user's disk on the next sync. Files named `… (lokal).wav` are the user's own copies next to the hub's file: never uploaded, shown as a hint.
 - The Tauri shell needs webkit2gtk, which the main dev laptop lacks; build it in CI.
 - The session token lives in the system keychain (`keyring`, service `org.pleasance.musichubsync`) and never reaches the webview; commands that need the hub run on the Rust side.
 - Config (`config.json`) and the sync index (`index.json`, bound to its hub and sync folder) live in the app's config/data folders, never in the sync folder. A new folder or hub starts with an empty index.

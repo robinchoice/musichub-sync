@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::layout::{
-    is_audio, is_noise, parse_version_file, safe_name, stem_file, stem_name, version_file, STEMS, VERSIONS,
+    aside_path, is_aside, is_audio, is_noise, parse_version_file, safe_name, stem_file, stem_name, version_file, STEMS, VERSIONS,
 };
 use crate::remote;
 
@@ -60,6 +60,8 @@ pub enum SkipReason {
     NoUploadRights,
     // Not inside a project folder, or nested too deep
     Unplaced,
+    // The user's own copy "(lokal)" next to the hub's file
+    LocalOnly,
     // More than one thing in the hub would take this path; nothing under it is touched on either side
     Collision,
 }
@@ -81,7 +83,7 @@ pub enum Action {
     TrashRemote { path: String, kind: Kind, remote_id: String },
     // Deleted in the hub: into the system trash
     TrashLocal { path: String },
-    // Something unknown lies where the hub's file belongs: it moves aside, then the hub's file comes down
+    // Something that isn't the hub's current file lies where it belongs: it moves aside, then the hub's file comes down
     KeepAside { path: String, to: String, kind: Kind, remote_id: String },
     Skip { path: String, reason: SkipReason },
 }
@@ -103,22 +105,6 @@ fn folder_of(path: &str) -> &str {
 
 fn file_of(path: &str) -> &str {
     path.rsplit_once('/').map_or(path, |(_, file)| file)
-}
-
-// "Bass.wav" → "Bass (lokal).wav", or "Bass (lokal 2).wav" and so on when that name is taken: a copy never replaces another
-pub fn aside_path(path: &str, taken: impl Fn(&str) -> bool) -> String {
-    let (stem, ext) = match path.rsplit_once('.') {
-        Some((stem, ext)) if !stem.ends_with('/') => (stem, format!(".{ext}")),
-        _ => (path, String::new()),
-    };
-    let mut n = 1;
-    loop {
-        let candidate = if n == 1 { format!("{stem} (lokal){ext}") } else { format!("{stem} (lokal {n}){ext}") };
-        if !taken(&candidate) {
-            return candidate;
-        }
-        n += 1;
-    }
 }
 
 // Paths more than one project, track or file of the hub would take, e.g. two projects named alike.
@@ -275,6 +261,10 @@ pub fn plan(remote: &remote::State, index: &[IndexEntry], disk: &[DiskFile], now
                     }
                 } else if !settled(d) {
                     actions.push(Action::Skip { path: path.clone(), reason: SkipReason::Busy });
+                } else if x.kind == Kind::Stem && hub_changed(e) {
+                    // Changed on both sides: a stem has no history, so the hub's file stays and the local one moves aside
+                    let to = aside_path(path, |p| on_disk.contains_key(p));
+                    actions.push(Action::KeepAside { path: path.clone(), to, kind: x.kind, remote_id: x.remote_id.into() });
                 } else {
                     // Saved over: a new version on top of this one, or a new file for the stem
                     actions.push(match x.kind {
@@ -313,6 +303,10 @@ pub fn plan(remote: &remote::State, index: &[IndexEntry], disk: &[DiskFile], now
         }
         let name = file_of(&d.path);
         if is_noise(name) {
+            continue;
+        }
+        if is_aside(name) {
+            actions.push(Action::Skip { path: d.path.clone(), reason: SkipReason::LocalOnly });
             continue;
         }
         if !is_audio(name) {

@@ -143,7 +143,8 @@ fn update_tray(app: &AppHandle, status: &Status) {
 
 // The sync thread: a round every ROUND, or right away when kicked
 fn sync_loop(app: AppHandle, kicks: Receiver<()>) {
-    let mut syncer: Option<(String, PathBuf, Syncer<HttpHub>)> = None;
+    // Server, folder and token the syncer was built for; any of them changing means a fresh one
+    let mut syncer: Option<(String, PathBuf, String, Syncer<HttpHub>)> = None;
     loop {
         let config = app.state::<Shared>().config.lock().unwrap().clone();
         match (token(), &config.folder) {
@@ -153,11 +154,11 @@ fn sync_loop(app: AppHandle, kicks: Receiver<()>) {
             (Some(_), _) if config.paused => set_status(&app, |s| s.state = "paused".into()),
             (Some(token), Some(folder)) => {
                 let server = config.server();
-                let fresh = !matches!(&syncer, Some((s, f, _)) if *s == server && f == folder);
+                let fresh = !matches!(&syncer, Some((s, f, t, _)) if *s == server && f == folder && *t == token);
                 if fresh {
-                    syncer = Some((server.clone(), folder.clone(), Syncer::new(HttpHub::new(&server, &token), folder, &index_file(&app))));
+                    syncer = Some((server.clone(), folder.clone(), token.clone(), Syncer::new(HttpHub::new(&server, &token), folder, &index_file(&app))));
                 }
-                let (_, _, s) = syncer.as_mut().unwrap();
+                let (_, _, _, s) = syncer.as_mut().unwrap();
                 set_status(&app, |st| st.state = "syncing".into());
                 let result = s.run(&config.excluded, now());
                 let projects = s
@@ -183,6 +184,7 @@ fn sync_loop(app: AppHandle, kicks: Receiver<()>) {
                             let message = match reason {
                                 SkipReason::NoUploadRights => "Keine Upload-Rechte in diesem Projekt, die Datei bleibt lokal",
                                 SkipReason::Collision => "Im Hub heißt mehr als eins so, dieser Pfad bleibt außen vor",
+                                SkipReason::LocalOnly => "Deine Fassung, bleibt lokal",
                                 _ => return None,
                             };
                             Some(ProblemInfo { path: path.clone(), message: message.into() })
