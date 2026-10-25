@@ -398,14 +398,15 @@ fn logout(app: AppHandle, shared: State<Shared>) {
     let config = {
         let mut config = shared.config.lock().unwrap();
         let server = config.server();
-        if let Some(token) = token(&server) {
+        let token = token(&server);
+        if let Some(entry) = keyring(&server) {
+            let _ = entry.delete_credential();
+        }
+        if let Some(token) = token {
             // Away from the main thread: an unreachable hub must not freeze the popover; the session is gone here either way
             thread::spawn(move || {
                 let _ = HttpHub::new(&server, &token).logout();
             });
-        }
-        if let Some(entry) = keyring(&server) {
-            let _ = entry.delete_credential();
         }
         config.email = None;
         config.clone()
