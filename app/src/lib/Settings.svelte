@@ -23,11 +23,6 @@
     autostart ? await disable() : await enable();
     autostart = await isEnabled();
   }
-
-  function toggleProject(id) {
-    const excluded = info.excluded.includes(id) ? info.excluded.filter((e) => e !== id) : [...info.excluded, id];
-    invoke('configure', { excluded });
-  }
 </script>
 
 <div class="top">
@@ -50,7 +45,7 @@
     {#if choosing}
       {#each info.status.projects as p (p.id)}
         <label class="it">
-          <input type="checkbox" checked={!info.excluded.includes(p.id)} onchange={() => toggleProject(p.id)} />
+          <input type="checkbox" checked={!info.excluded.includes(p.id)} onchange={(e) => invoke('sync_project', { id: p.id, sync: e.currentTarget.checked })} />
           <span class="grow">{p.name}</span>
           <span class="muted small">{size(p.bytes)}</span>
         </label>

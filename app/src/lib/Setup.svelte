@@ -46,6 +46,7 @@
 
   async function toProjects() {
     step = 4;
+    error = '';
     try {
       projects = await invoke('projects');
       // Big archives start unticked, everything else syncs
@@ -93,7 +94,9 @@
     <h1 class="display">Welche Projekte?</h1>
     <p class="muted">Ausgewählte Projekte liegen komplett lokal, mit allen Versionen und Spuren.</p>
     {#if error}<p class="error">{error}</p>{/if}
-    {#if !projects}
+    {#if !projects && error}
+      <div class="row"><button class="btn primary" onclick={toProjects}>Erneut versuchen</button></div>
+    {:else if !projects}
       <div class="wait"><div class="spin"></div> Lade Projekte …</div>
     {:else}
       <div class="checks">

@@ -105,12 +105,13 @@ fn save_config(app: &AppHandle, config: &Config) {
     let _ = std::fs::write(file, serde_json::to_vec_pretty(config).unwrap_or_default());
 }
 
-fn keyring() -> Option<keyring::Entry> {
-    keyring::Entry::new(KEYRING_SERVICE, "session").ok()
+// One entry per server, so a session never goes to a hub it didn't come from
+fn keyring(server: &str) -> Option<keyring::Entry> {
+    keyring::Entry::new(KEYRING_SERVICE, server).ok()
 }
 
-fn token() -> Option<String> {
-    keyring()?.get_password().ok()
+fn token(server: &str) -> Option<String> {
+    keyring(server)?.get_password().ok()
 }
 
 fn default_folder(app: &AppHandle) -> PathBuf {
@@ -147,13 +148,13 @@ fn sync_loop(app: AppHandle, kicks: Receiver<()>) {
     let mut syncer: Option<(String, PathBuf, String, Syncer<HttpHub>)> = None;
     loop {
         let config = app.state::<Shared>().config.lock().unwrap().clone();
-        match (token(), &config.folder) {
+        let server = config.server();
+        match (token(&server), &config.folder) {
             (None, _) => set_status(&app, |s| s.state = "login".into()),
             (Some(_), _) if !config.ready => set_status(&app, |s| s.state = "setup".into()),
             (Some(_), None) => set_status(&app, |s| s.state = "setup".into()),
             (Some(_), _) if config.paused => set_status(&app, |s| s.state = "paused".into()),
             (Some(token), Some(folder)) => {
-                let server = config.server();
                 let fresh = !matches!(&syncer, Some((s, f, t, _)) if *s == server && f == folder && *t == token);
                 if fresh {
                     syncer = Some((server.clone(), folder.clone(), token.clone(), Syncer::new(HttpHub::new(&server, &token), folder, &index_file(&app))));
@@ -185,6 +186,7 @@ fn sync_loop(app: AppHandle, kicks: Receiver<()>) {
                                 SkipReason::NoUploadRights => "Keine Upload-Rechte in diesem Projekt, die Datei bleibt lokal",
                                 SkipReason::Collision => "Im Hub heißt mehr als eins so, dieser Pfad bleibt außen vor",
                                 SkipReason::LocalOnly => "Deine Fassung, bleibt lokal",
+                                SkipReason::Unplaced if !path.contains('/') => "Liegt in keinem Projektordner, leg die Datei in einen, dann geht sie hoch",
                                 _ => return None,
                             };
                             Some(ProblemInfo { path: path.clone(), message: message.into() })
@@ -199,7 +201,7 @@ fn sync_loop(app: AppHandle, kicks: Receiver<()>) {
                         });
                     }
                     Err(Error::Unauthorized) => {
-                        if let Some(entry) = keyring() {
+                        if let Some(entry) = keyring(&server) {
                             let _ = entry.delete_credential();
                         }
                         syncer = None;
@@ -270,7 +272,7 @@ fn login_start(app: AppHandle, shared: State<Shared>) -> Result<serde_json::Valu
             match login::poll(&server, &polling) {
                 Ok(None) => continue,
                 Ok(Some(session)) => {
-                    if let Some(entry) = keyring() {
+                    if let Some(entry) = keyring(&server) {
                         let _ = entry.set_password(&session.token);
                     }
                     let shared = app.state::<Shared>();
@@ -321,11 +323,26 @@ fn configure(app: AppHandle, shared: State<Shared>, folder: Option<PathBuf>, exc
     kick(&shared);
 }
 
+// One project in or out; changed under the lock, so quick clicks never undo each other
+#[tauri::command]
+fn sync_project(app: AppHandle, shared: State<Shared>, id: String, sync: bool) {
+    let config = {
+        let mut config = shared.config.lock().unwrap();
+        config.excluded.retain(|e| *e != id);
+        if !sync {
+            config.excluded.push(id);
+        }
+        config.clone()
+    };
+    save_config(&app, &config);
+    kick(&shared);
+}
+
 // Projects to choose from during the setup, before the first round
 #[tauri::command]
 fn projects(shared: State<Shared>) -> Result<Vec<ProjectInfo>, String> {
     let server = shared.config.lock().unwrap().server();
-    let token = token().ok_or("Nicht angemeldet")?;
+    let token = token(&server).ok_or("Nicht angemeldet")?;
     let hub = HttpHub::new(&server, &token);
     use musichub_sync_core::hub::Hub;
     let state = hub.state().map_err(|e| e.to_string())?.unwrap_or_default();
@@ -344,7 +361,7 @@ fn projects(shared: State<Shared>) -> Result<Vec<ProjectInfo>, String> {
 #[tauri::command]
 fn activity(shared: State<Shared>) -> Result<serde_json::Value, String> {
     let server = shared.config.lock().unwrap().server();
-    let token = token().ok_or("Nicht angemeldet")?;
+    let token = token(&server).ok_or("Nicht angemeldet")?;
     HttpHub::new(&server, &token).activity(8).map_err(|e| e.to_string())
 }
 
@@ -372,11 +389,11 @@ fn open_hub(app: AppHandle, shared: State<Shared>, path: Option<String>) {
 
 #[tauri::command]
 fn logout(app: AppHandle, shared: State<Shared>) {
-    if let Some(entry) = keyring() {
-        let _ = entry.delete_credential();
-    }
     let config = {
         let mut config = shared.config.lock().unwrap();
+        if let Some(entry) = keyring(&config.server()) {
+            let _ = entry.delete_credential();
+        }
         config.email = None;
         config.clone()
     };
@@ -419,6 +436,7 @@ pub fn run() {
             login_start,
             open_verification,
             configure,
+            sync_project,
             projects,
             activity,
             sync_now,
@@ -433,7 +451,11 @@ pub fn run() {
 
             let handle = app.handle().clone();
             let config = load_config(&handle);
-            let first_run = !config.ready || token().is_none();
+            // Sessions from before the per-server entries can't tell their hub: drop them, one more login
+            if let Ok(old) = keyring::Entry::new(KEYRING_SERVICE, "session") {
+                let _ = old.delete_credential();
+            }
+            let first_run = !config.ready || token(&config.server()).is_none();
             app.manage(Shared { config: Mutex::new(config), status: Mutex::new(Status::default()), kick: Mutex::new(kick_tx) });
 
             // A template icon follows the menu bar's colours on macOS; elsewhere the light wave suits dark panels
