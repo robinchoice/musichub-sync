@@ -106,8 +106,13 @@ impl HttpHub {
         HttpHub {
             base: format!("{}/api/v1", server.trim_end_matches('/')),
             token: token.into(),
-            // A server that connects and then stays silent must not hold a round forever; uploads may take as long as they need
-            agent: ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(15)).timeout_read(Duration::from_secs(60)).build(),
+            // A server that connects and then stays silent, or stops taking an upload, must not hold a round forever;
+            // the limits apply per read and write, so uploads and downloads may take as long as they need while bytes flow
+            agent: ureq::AgentBuilder::new()
+                .timeout_connect(Duration::from_secs(15))
+                .timeout_read(Duration::from_secs(60))
+                .timeout_write(Duration::from_secs(60))
+                .build(),
             etag: std::sync::Mutex::new(None),
         }
     }
