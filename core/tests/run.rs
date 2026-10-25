@@ -8,7 +8,7 @@ use std::sync::Once;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use musichub_sync_core::hub::{Error, Hub, Result};
-use musichub_sync_core::plan::Kind;
+use musichub_sync_core::plan::{Kind, SkipReason};
 use musichub_sync_core::remote::{Project, State, Stem, Track, Version};
 use musichub_sync_core::run::Syncer;
 use musichub_sync_core::scan::sha256;
@@ -22,6 +22,7 @@ struct FakeHub {
     open_tracks: Vec<String>,
     // Versions only the owner may delete
     owner: bool,
+    origin: String,
 }
 
 fn sha(bytes: &[u8]) -> String {
@@ -89,6 +90,10 @@ impl FakeHub {
 }
 
 impl Hub for FakeHub {
+    fn origin(&self) -> String {
+        self.origin.clone()
+    }
+
     fn state(&self) -> Result<Option<State>> {
         Ok(Some(self.state.borrow().clone()))
     }
@@ -361,6 +366,31 @@ fn a_new_folder_starts_without_the_old_folders_history() {
     assert_eq!(s.syncer.hub.versions().len(), 1);
     assert!(!s.syncer.hub.state.borrow().projects[0].tracks[0].stems.is_empty());
     assert!(s.exists(V1) && new_root.join(V1).exists());
+}
+
+#[test]
+fn another_hub_starts_without_this_hubs_history() {
+    let mut s = setup(FakeHub::new());
+    s.round();
+    let index = s._dir.path().join("index.json");
+    s.syncer = Syncer::new(FakeHub { origin: "other".into(), ..Default::default() }, &s.root, &index);
+    s.round();
+    assert_eq!(s.read(V1), b"mix one");
+    assert_eq!(s.syncer.hub.state.borrow().projects.len(), 1, "the folder's content went up to the other hub");
+}
+
+#[test]
+fn a_project_named_like_an_excluded_one_stays_out_of_its_folder() {
+    let hub = FakeHub::new();
+    let twin = hub.create_project("Tiefgang").unwrap();
+    let t = hub.add_track(&twin, "Nachtbus");
+    hub.add_version(&t, b"twin mix", Some("Rough Mix"), None);
+    let mut s = setup(hub);
+    s.write(V1, b"my own file");
+    let report = s.syncer.run(&[twin], later()).unwrap();
+    assert_eq!(s.read(V1), b"my own file");
+    assert!(report.downloaded.is_empty());
+    assert!(report.skipped.contains(&("Tiefgang".into(), SkipReason::Collision)), "{report:?}");
 }
 
 #[test]

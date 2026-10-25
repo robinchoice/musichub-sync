@@ -8,7 +8,6 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use musichub_sync_core::hub::{Error, HttpHub};
-use musichub_sync_core::layout::safe_name;
 use musichub_sync_core::login;
 use musichub_sync_core::plan::SkipReason;
 use musichub_sync_core::run::{Problem, Syncer};
@@ -90,10 +89,8 @@ fn config_file(app: &AppHandle) -> PathBuf {
     app.path().app_config_dir().unwrap_or_default().join("config.json")
 }
 
-// One index per hub; the index itself knows which folder it belongs to
-fn index_file(app: &AppHandle, server: &str) -> PathBuf {
-    let host = server.trim_start_matches("https://").trim_start_matches("http://");
-    app.path().app_data_dir().unwrap_or_default().join(format!("index-{}.json", safe_name(host)))
+fn index_file(app: &AppHandle) -> PathBuf {
+    app.path().app_data_dir().unwrap_or_default().join("index.json")
 }
 
 fn load_config(app: &AppHandle) -> Config {
@@ -158,7 +155,7 @@ fn sync_loop(app: AppHandle, kicks: Receiver<()>) {
                 let server = config.server();
                 let fresh = !matches!(&syncer, Some((s, f, _)) if *s == server && f == folder);
                 if fresh {
-                    syncer = Some((server.clone(), folder.clone(), Syncer::new(HttpHub::new(&server, &token), folder, &index_file(&app, &server))));
+                    syncer = Some((server.clone(), folder.clone(), Syncer::new(HttpHub::new(&server, &token), folder, &index_file(&app))));
                 }
                 let (_, _, s) = syncer.as_mut().unwrap();
                 set_status(&app, |st| st.state = "syncing".into());

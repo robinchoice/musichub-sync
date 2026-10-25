@@ -49,17 +49,22 @@ impl<H: Hub> Syncer<H> {
             self.state = Some(state);
         }
         let Some(full) = self.state.clone() else { return Err(Error::Network("Kein Stand vom Hub".into())) };
-        let excluded_dirs: Vec<String> = full.projects.iter().filter(|p| excluded.contains(&p.id)).map(|p| safe_name(&p.name)).collect();
-        let outside = |path: &str| excluded_dirs.iter().any(|d| path.split('/').next() == Some(d.as_str()));
-        let remote = remote::State { projects: full.projects.into_iter().filter(|p| !excluded.contains(&p.id)).collect() };
+        // Folders compare without case, like the file systems of macOS and Windows
+        let excluded_dirs: Vec<String> = full.projects.iter().filter(|p| excluded.contains(&p.id)).map(|p| safe_name(&p.name).to_lowercase()).collect();
+        let outside = |path: &str| excluded_dirs.iter().any(|d| path.split('/').next().is_some_and(|first| first.to_lowercase() == *d));
+        // A project sharing its folder with an excluded one stays out as well, else it would write into that folder
+        let (shadowed, projects): (Vec<_>, Vec<_>) =
+            full.projects.into_iter().filter(|p| !excluded.contains(&p.id)).partition(|p| excluded_dirs.contains(&safe_name(&p.name).to_lowercase()));
+        let remote = remote::State { projects };
 
         fs::create_dir_all(&self.root)?;
-        let mut entries: Vec<IndexEntry> = index::load(&self.index_file, &self.root)?;
+        let mut entries: Vec<IndexEntry> = index::load(&self.index_file, &self.hub.origin(), &self.root)?;
         let kept: Vec<IndexEntry> = entries.iter().filter(|e| outside(&e.path)).cloned().collect();
         entries.retain(|e| !outside(&e.path));
         let disk: Vec<_> = scan::scan(&self.root, &entries, now)?.into_iter().filter(|d| !outside(&d.path)).collect();
 
         let mut run = Run { hub: &self.hub, root: &self.root, remote: &remote, entries, report: Report::default(), projects: HashMap::new(), tracks: HashMap::new() };
+        run.report.skipped.extend(shadowed.iter().map(|p| (safe_name(&p.name), SkipReason::Collision)));
         let mut result = Ok(());
         for action in plan(&remote, &run.entries, &disk, now) {
             let path = action_path(&action).to_string();
@@ -80,7 +85,7 @@ impl<H: Hub> Syncer<H> {
         let report = run.report;
         let mut entries = run.entries;
         entries.extend(kept);
-        index::save(&self.index_file, &self.root, &entries)?;
+        index::save(&self.index_file, &self.hub.origin(), &self.root, &entries)?;
         result.map(|()| report)
     }
 }

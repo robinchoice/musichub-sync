@@ -1,6 +1,6 @@
 // What both sides held after the last sync, kept in the app's data folder and never in the sync folder:
 // a manifest that syncs along can lose entries and silently undo the sync.
-// The index belongs to one folder: read for another one it would report its files as deleted.
+// The index belongs to one folder on one hub: read for another folder or hub it would report files as deleted.
 
 use std::fs;
 use std::io;
@@ -12,6 +12,7 @@ use crate::plan::{IndexEntry, Kind};
 
 #[derive(Serialize, Deserialize)]
 struct Stored {
+    hub: String,
     root: String,
     entries: Vec<StoredEntry>,
 }
@@ -26,15 +27,15 @@ struct StoredEntry {
     sha256: Option<String>,
 }
 
-// Empty for a folder the index doesn't belong to
-pub fn load(file: &Path, root: &Path) -> io::Result<Vec<IndexEntry>> {
+// Empty for a hub or folder the index doesn't belong to
+pub fn load(file: &Path, hub: &str, root: &Path) -> io::Result<Vec<IndexEntry>> {
     let text = match fs::read_to_string(file) {
         Ok(text) => text,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e),
     };
     let stored: Stored = serde_json::from_str(&text).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    if stored.root != root.to_string_lossy() {
+    if stored.hub != hub || stored.root != root.to_string_lossy() {
         return Ok(Vec::new());
     }
     Ok(stored
@@ -52,7 +53,7 @@ pub fn load(file: &Path, root: &Path) -> io::Result<Vec<IndexEntry>> {
 }
 
 // Written next to the target and renamed over it, so a crash never leaves half an index
-pub fn save(file: &Path, root: &Path, entries: &[IndexEntry]) -> io::Result<()> {
+pub fn save(file: &Path, hub: &str, root: &Path, entries: &[IndexEntry]) -> io::Result<()> {
     let entries: Vec<StoredEntry> = entries
         .iter()
         .map(|e| StoredEntry {
@@ -70,7 +71,7 @@ pub fn save(file: &Path, root: &Path, entries: &[IndexEntry]) -> io::Result<()> 
     if let Some(dir) = file.parent() {
         fs::create_dir_all(dir)?;
     }
-    let stored = Stored { root: root.to_string_lossy().into_owned(), entries };
+    let stored = Stored { hub: hub.into(), root: root.to_string_lossy().into_owned(), entries };
     let tmp = file.with_extension("tmp");
     fs::write(&tmp, serde_json::to_vec_pretty(&stored)?)?;
     fs::rename(tmp, file)

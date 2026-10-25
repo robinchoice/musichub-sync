@@ -49,6 +49,8 @@ impl From<io::Error> for Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub trait Hub {
+    // Which hub this is, e.g. its URL; the index is bound to it
+    fn origin(&self) -> String;
     // None when nothing changed since the last call
     fn state(&self) -> Result<Option<remote::State>>;
     fn download(&self, kind: Kind, id: &str, to: &Path) -> Result<()>;
@@ -179,6 +181,10 @@ fn field<T: serde::de::DeserializeOwned>(response: ureq::Response, key: &str) ->
 }
 
 impl Hub for HttpHub {
+    fn origin(&self) -> String {
+        self.base.clone()
+    }
+
     fn state(&self) -> Result<Option<remote::State>> {
         let mut request = self.request("GET", "/sync/state");
         if let Some(etag) = self.etag.lock().unwrap().as_deref() {

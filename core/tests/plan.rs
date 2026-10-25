@@ -209,6 +209,29 @@ fn a_renamed_version_file_with_other_content_is_a_new_version_not_a_relabel() {
 }
 
 #[test]
+fn a_relabel_sticks_to_the_version_with_that_number() {
+    // v1 and v2 hold the same bytes; v1's file is deleted, v2's renamed
+    let mut state = hub();
+    state.projects[0].tracks[0].versions = vec![version("v1", 1, "Take", 100), version("v2", 2, "Take", 100)];
+    for v in &mut state.projects[0].tracks[0].versions {
+        v.sha256 = Some("same".into());
+    }
+    let index = vec![
+        entry("Tiefgang/Nachtbus/Versionen/v1 Take.wav", Kind::Version, "v1", 100, "same"),
+        entry("Tiefgang/Nachtbus/Versionen/v2 Take.wav", Kind::Version, "v2", 100, "same"),
+    ];
+    let disk = vec![file("Tiefgang/Nachtbus/Versionen/v2 Keeper.wav", 100, OLD, Some("same"))];
+    let actions = plan(&state, &index, &disk, NOW);
+    assert!(actions.contains(&Action::Relabel {
+        from: "Tiefgang/Nachtbus/Versionen/v2 Take.wav".into(),
+        to: "Tiefgang/Nachtbus/Versionen/v2 Keeper.wav".into(),
+        version_id: "v2".into(),
+        label: Some("Keeper".into()),
+    }), "{actions:?}");
+    assert!(actions.contains(&Action::TrashRemote { path: "Tiefgang/Nachtbus/Versionen/v1 Take.wav".into(), kind: Kind::Version, remote_id: "v1".into() }));
+}
+
+#[test]
 fn a_renamed_version_file_not_yet_hashed_holds_both_names() {
     let (index, mut disk) = synced();
     disk[0] = file("Tiefgang/Nachtbus/Versionen/v1 Final.wav", 100, NOW - 1, None);
@@ -312,6 +335,36 @@ fn projects_named_alike_are_reported_and_left_alone() {
             },
         ]
     );
+}
+
+#[test]
+fn names_differing_only_in_case_collide_too() {
+    let mut state = hub();
+    let mut twin = state.projects[0].clone();
+    twin.id = "p2".into();
+    twin.name = "TIEFGANG".into();
+    twin.tracks[0].id = "t2".into();
+    twin.tracks[0].versions[0].id = "v2".into();
+    twin.tracks[0].stems[0].id = "s2".into();
+    state.projects.push(twin);
+    let actions = plan(&state, &[], &[], NOW);
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    assert!(matches!(&actions[0], Action::Skip { path, reason: SkipReason::Collision } if path.eq_ignore_ascii_case("Tiefgang")));
+}
+
+#[test]
+fn a_collision_born_from_a_rename_in_the_hub_leaves_the_synced_files_alone() {
+    // Both synced as "Tiefgang"; then the hub renamed it "Demos", where another project of that name exists
+    let (index, disk) = synced();
+    let mut state = hub();
+    state.projects[0].name = "Demos".into();
+    let mut twin = state.projects[0].clone();
+    twin.id = "p2".into();
+    twin.tracks[0].id = "t2".into();
+    twin.tracks[0].versions[0].id = "v2".into();
+    twin.tracks[0].stems[0].id = "s2".into();
+    state.projects.push(twin);
+    assert_eq!(plan(&state, &index, &disk, NOW), vec![Action::Skip { path: "Demos".into(), reason: SkipReason::Collision }]);
 }
 
 #[test]

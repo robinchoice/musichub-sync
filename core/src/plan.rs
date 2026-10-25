@@ -121,13 +121,15 @@ pub fn aside_path(path: &str, taken: impl Fn(&str) -> bool) -> String {
     }
 }
 
-// Paths more than one project, track or file of the hub would take, e.g. two projects named alike
+// Paths more than one project, track or file of the hub would take, e.g. two projects named alike.
+// Case doesn't count: the file systems of macOS and Windows don't tell "Mix" from "mix" either.
 fn collisions(remote: &remote::State) -> Vec<String> {
     fn taken_twice(paths: impl Iterator<Item = String>) -> Vec<String> {
         let mut seen = HashSet::new();
-        let mut twice = Vec::new();
+        let mut twice: Vec<String> = Vec::new();
         for path in paths {
-            if !seen.insert(path.clone()) && !twice.contains(&path) {
+            let key = path.to_lowercase();
+            if !seen.insert(key.clone()) && !twice.iter().any(|t| t.to_lowercase() == key) {
                 twice.push(path);
             }
         }
@@ -151,14 +153,17 @@ fn collisions(remote: &remote::State) -> Vec<String> {
 pub fn plan(remote: &remote::State, index: &[IndexEntry], disk: &[DiskFile], now: u64) -> Vec<Action> {
     // A colliding path stays out on both sides, with everything under it, until someone renames one of the two
     let collisions = collisions(remote);
-    let collides = |path: &str| collisions.iter().any(|c| path == c || path.strip_prefix(c.as_str()).is_some_and(|rest| rest.starts_with('/')));
-    let index: Vec<IndexEntry> = index.iter().filter(|e| !collides(&e.path)).cloned().collect();
-    let disk: Vec<DiskFile> = disk.iter().filter(|d| !collides(&d.path)).cloned().collect();
+    let lower: Vec<String> = collisions.iter().map(|c| c.to_lowercase()).collect();
+    let collides = |path: &str| {
+        let path = path.to_lowercase();
+        lower.iter().any(|c| path == *c || path.strip_prefix(c.as_str()).is_some_and(|rest| rest.starts_with('/')))
+    };
     let mut actions: Vec<Action> = collisions.iter().map(|c| Action::Skip { path: c.clone(), reason: SkipReason::Collision }).collect();
 
     // Where every file of the hub belongs
     let mut expected: HashMap<String, Expected> = HashMap::new();
     let mut remote_path: HashMap<&str, String> = HashMap::new();
+    let mut colliding_ids: HashSet<&str> = HashSet::new();
     for project in &remote.projects {
         let project_dir = safe_name(&project.name);
         for track in &project.tracks {
@@ -166,6 +171,7 @@ pub fn plan(remote: &remote::State, index: &[IndexEntry], disk: &[DiskFile], now
             for v in &track.versions {
                 let path = join(&[&project_dir, &track_dir, VERSIONS, &version_file(v)]);
                 if collides(&path) {
+                    colliding_ids.insert(&v.id);
                     continue;
                 }
                 remote_path.insert(&v.id, path.clone());
@@ -174,6 +180,7 @@ pub fn plan(remote: &remote::State, index: &[IndexEntry], disk: &[DiskFile], now
             for s in &track.stems {
                 let path = join(&[&project_dir, &track_dir, STEMS, &stem_file(s)]);
                 if collides(&path) {
+                    colliding_ids.insert(&s.id);
                     continue;
                 }
                 remote_path.insert(&s.id, path.clone());
@@ -181,6 +188,11 @@ pub fn plan(remote: &remote::State, index: &[IndexEntry], disk: &[DiskFile], now
             }
         }
     }
+
+    // What the hub holds on a colliding path stays out too, wherever its file lies now (e.g. under the project's old name)
+    let held: HashSet<&str> = index.iter().filter(|e| colliding_ids.contains(e.remote_id.as_str())).map(|e| e.path.as_str()).collect();
+    let index: Vec<IndexEntry> = index.iter().filter(|e| !collides(&e.path) && !held.contains(e.path.as_str())).cloned().collect();
+    let disk: Vec<DiskFile> = disk.iter().filter(|d| !collides(&d.path) && !held.contains(d.path.as_str())).cloned().collect();
 
     let by_path: HashMap<&str, &IndexEntry> = index.iter().map(|e| (e.path.as_str(), e)).collect();
     let by_id: HashMap<&str, &IndexEntry> = index.iter().map(|e| (e.remote_id.as_str(), e)).collect();
@@ -192,9 +204,9 @@ pub fn plan(remote: &remote::State, index: &[IndexEntry], disk: &[DiskFile], now
     let mut done_disk: HashSet<&str> = HashSet::new();
     let mut done_index: HashSet<&str> = HashSet::new();
 
-    // Version files renamed locally: the old name is gone, a new one with the very same content appeared.
-    // Same number and size alone prove nothing: the file may have been saved over as well, and that
-    // content has to go up. Until the new file is hashed, both names wait.
+    // Version files renamed locally: the old name is gone, a new one with the same number and the very same
+    // content appeared. Number and size alone prove nothing: the file may have been saved over as well, and
+    // that content has to go up. Until the new file is hashed, both names wait.
     for d in &disk {
         if by_path.contains_key(d.path.as_str()) || expected.contains_key(&d.path) || !file_of(folder_of(&d.path)).eq(VERSIONS) {
             continue;
@@ -205,6 +217,7 @@ pub fn plan(remote: &remote::State, index: &[IndexEntry], disk: &[DiskFile], now
                 && folder_of(&e.path) == folder_of(&d.path)
                 && !on_disk.contains_key(e.path.as_str())
                 && e.size == d.size
+                && parse_version_file(file_of(&e.path)).is_some_and(|(n, _)| n == number)
                 && remote_path.contains_key(e.remote_id.as_str())
         };
         if let Some(e) = index.iter().find(|e| gone_twin(e) && e.sha256.is_some() && e.sha256 == d.sha256) {
@@ -217,7 +230,7 @@ pub fn plan(remote: &remote::State, index: &[IndexEntry], disk: &[DiskFile], now
             done_disk.insert(&d.path);
             done_index.insert(&e.path);
         } else if d.sha256.is_none() {
-            if let Some(e) = index.iter().find(|e| gone_twin(e) && parse_version_file(file_of(&e.path)).is_some_and(|(n, _)| n == number)) {
+            if let Some(e) = index.iter().find(|e| gone_twin(e)) {
                 actions.push(Action::Skip { path: d.path.clone(), reason: SkipReason::Busy });
                 done_disk.insert(&d.path);
                 done_index.insert(&e.path);
