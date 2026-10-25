@@ -150,7 +150,11 @@ fn sync_loop(app: AppHandle, kicks: Receiver<()>) {
         let config = app.state::<Shared>().config.lock().unwrap().clone();
         let server = config.server();
         match (token(&server), &config.folder) {
-            (None, _) => set_status(&app, |s| s.state = "login".into()),
+            (None, _) => {
+                // Logged out: nothing of the old session (token, the hub's last state) stays around
+                syncer = None;
+                set_status(&app, |s| s.state = "login".into());
+            }
             (Some(_), _) if !config.ready => set_status(&app, |s| s.state = "setup".into()),
             (Some(_), None) => set_status(&app, |s| s.state = "setup".into()),
             (Some(_), _) if config.paused => set_status(&app, |s| s.state = "paused".into()),
@@ -393,7 +397,14 @@ fn open_hub(app: AppHandle, shared: State<Shared>, path: Option<String>) {
 fn logout(app: AppHandle, shared: State<Shared>) {
     let config = {
         let mut config = shared.config.lock().unwrap();
-        if let Some(entry) = keyring(&config.server()) {
+        let server = config.server();
+        if let Some(token) = token(&server) {
+            // Away from the main thread: an unreachable hub must not freeze the popover; the session is gone here either way
+            thread::spawn(move || {
+                let _ = HttpHub::new(&server, &token).logout();
+            });
+        }
+        if let Some(entry) = keyring(&server) {
             let _ = entry.delete_credential();
         }
         config.email = None;

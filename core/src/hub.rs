@@ -149,6 +149,11 @@ impl HttpHub {
         parse(self.get(&format!("/activity?limit={limit}"))?)
     }
 
+    // Ends the session in the hub too, so a token left behind somewhere is worthless
+    pub fn logout(&self) -> Result<()> {
+        self.send_json("POST", "/auth/logout", json!({})).map(|_| ())
+    }
+
     fn upload_url(&self, path: &str, file: &Path) -> Result<UploadUrl> {
         let name = file_name(file);
         let body = json!({ "fileName": name, "mimeType": mime_of(&name), "fileSize": file.metadata()?.len() });
