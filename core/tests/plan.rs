@@ -143,6 +143,17 @@ fn a_stem_changed_on_both_sides_keeps_the_hubs_file_and_puts_the_local_one_aside
 }
 
 #[test]
+fn a_synced_file_renamed_to_lokal_stays_and_the_hubs_file_comes_back() {
+    let (index, mut disk) = synced();
+    disk[0] = file("Tiefgang/Nachtbus/Versionen/v1 Rough Mix (lokal).wav", 100, OLD, Some("hash-v1"));
+    disk[1] = file("Tiefgang/Nachtbus/Stems/Drums (lokal).wav", 50, OLD, Some("drums-1"));
+    let actions = plan(&hub(), &index, &disk, NOW);
+    assert!(actions.contains(&Action::Download { path: V1.into(), kind: Kind::Version, remote_id: "v1".into() }), "{actions:?}");
+    assert!(actions.contains(&Action::Download { path: DRUMS.into(), kind: Kind::Stem, remote_id: "s1".into() }));
+    assert!(!actions.iter().any(|a| matches!(a, Action::Relabel { .. } | Action::TrashRemote { .. } | Action::UploadVersion { .. })), "{actions:?}");
+}
+
+#[test]
 fn copies_put_aside_stay_local() {
     let (index, mut disk) = synced();
     disk.push(file("Tiefgang/Nachtbus/Stems/Drums (lokal).wav", 70, OLD, None));

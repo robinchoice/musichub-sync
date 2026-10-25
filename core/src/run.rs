@@ -322,6 +322,8 @@ impl<H: Hub> Run<'_, H> {
             }
             Action::KeepAside { path, to, kind, remote_id } => {
                 self.move_aside(&path, &to)?;
+                // Nothing of the hub's lies here now; should the download fail, the next round fetches it again
+                self.forget(&path);
                 self.download(&path, kind, &remote_id)?;
                 self.report.problems.push(Problem { path: to, message: "Deine Fassung liegt daneben, die Datei aus dem Hub ist aktuell".into() });
                 Ok(())

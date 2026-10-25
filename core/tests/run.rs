@@ -26,6 +26,8 @@ struct FakeHub {
     // The process dies in the n-th upload, like a crash mid-round
     crash_at_upload: Option<u32>,
     uploads: RefCell<u32>,
+    // This many downloads fail with a network error first
+    downloads_failing: RefCell<u32>,
 }
 
 fn sha(bytes: &[u8]) -> String {
@@ -102,6 +104,10 @@ impl Hub for FakeHub {
     }
 
     fn download(&self, _kind: Kind, id: &str, to: &Path) -> Result<()> {
+        if *self.downloads_failing.borrow() > 0 {
+            *self.downloads_failing.borrow_mut() -= 1;
+            return Err(Error::Network("weg".into()));
+        }
         fs::write(to, &self.files.borrow()[id])?;
         Ok(())
     }
@@ -264,6 +270,21 @@ fn a_stem_changed_here_and_in_the_hub_comes_down_and_the_local_one_lies_next_to_
     let report = s.round();
     assert_eq!(report.skipped, vec![("Tiefgang/Nachtbus/Stems/Drums (lokal).wav".to_string(), SkipReason::LocalOnly)]);
     assert!(report.uploaded.is_empty() && report.problems.is_empty(), "{report:?}");
+}
+
+#[test]
+fn a_failed_download_after_moving_aside_fetches_again_instead_of_trashing() {
+    let mut s = setup(FakeHub::new());
+    s.round();
+    s.syncer.hub.replace_stem("t1", "s3", &{ let f = s._dir.path().join("hub.wav"); fs::write(&f, b"drums, hub cut").unwrap(); f }, "x").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    s.write(DRUMS, b"drums, my cut");
+    *s.syncer.hub.downloads_failing.borrow_mut() = 1;
+    assert!(matches!(s.syncer.run(&[], later()), Err(Error::Network(_))));
+    assert_eq!(s.read("Tiefgang/Nachtbus/Stems/Drums (lokal).wav"), b"drums, my cut");
+    s.round();
+    assert_eq!(s.read(DRUMS), b"drums, hub cut");
+    assert_eq!(s.syncer.hub.state.borrow().projects[0].tracks[0].stems.len(), 1);
 }
 
 #[test]

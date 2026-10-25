@@ -190,11 +190,34 @@ pub fn plan(remote: &remote::State, index: &[IndexEntry], disk: &[DiskFile], now
     let mut done_disk: HashSet<&str> = HashSet::new();
     let mut done_index: HashSet<&str> = HashSet::new();
 
+    // A synced file renamed to "(lokal)": the user keeps that copy, the hub's file comes back next to it
+    for d in &disk {
+        if !is_aside(file_of(&d.path)) || by_path.contains_key(d.path.as_str()) || d.sha256.is_none() {
+            continue;
+        }
+        let twin = index.iter().find(|e| {
+            folder_of(&e.path) == folder_of(&d.path)
+                && !on_disk.contains_key(e.path.as_str())
+                && e.sha256 == d.sha256
+                && remote_path.get(e.remote_id.as_str()) == Some(&e.path)
+        });
+        if let Some(e) = twin {
+            actions.push(Action::Download { path: e.path.clone(), kind: e.kind, remote_id: e.remote_id.clone() });
+            actions.push(Action::Skip { path: d.path.clone(), reason: SkipReason::LocalOnly });
+            done_disk.insert(&d.path);
+            done_index.insert(&e.path);
+        }
+    }
+
     // Version files renamed locally: the old name is gone, a new one with the same number and the very same
     // content appeared. Number and size alone prove nothing: the file may have been saved over as well, and
     // that content has to go up. Until the new file is hashed, both names wait.
     for d in &disk {
-        if by_path.contains_key(d.path.as_str()) || expected.contains_key(&d.path) || !file_of(folder_of(&d.path)).eq(VERSIONS) {
+        if done_disk.contains(d.path.as_str()) || by_path.contains_key(d.path.as_str()) || expected.contains_key(&d.path) || !file_of(folder_of(&d.path)).eq(VERSIONS) {
+            continue;
+        }
+        if is_aside(file_of(&d.path)) {
+            // Never a new label for the hub; the last loop keeps it local
             continue;
         }
         let Some((number, label)) = parse_version_file(file_of(&d.path)) else { continue };
