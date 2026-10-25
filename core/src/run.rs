@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::hub::{Error, Hub, Result};
@@ -53,7 +54,7 @@ impl<H: Hub> Syncer<H> {
         let remote = remote::State { projects: full.projects.into_iter().filter(|p| !excluded.contains(&p.id)).collect() };
 
         fs::create_dir_all(&self.root)?;
-        let mut entries: Vec<IndexEntry> = index::load(&self.index_file)?;
+        let mut entries: Vec<IndexEntry> = index::load(&self.index_file, &self.root)?;
         let kept: Vec<IndexEntry> = entries.iter().filter(|e| outside(&e.path)).cloned().collect();
         entries.retain(|e| !outside(&e.path));
         let disk: Vec<_> = scan::scan(&self.root, &entries, now)?.into_iter().filter(|d| !outside(&d.path)).collect();
@@ -79,7 +80,7 @@ impl<H: Hub> Syncer<H> {
         let report = run.report;
         let mut entries = run.entries;
         entries.extend(kept);
-        index::save(&self.index_file, &entries)?;
+        index::save(&self.index_file, &self.root, &entries)?;
         result.map(|()| report)
     }
 }
@@ -144,6 +145,14 @@ impl<H: Hub> Run<'_, H> {
         fs::create_dir_all(self.abs(parent_dir(to)))?;
         fs::rename(self.abs(from), self.abs(to))?;
         Ok(())
+    }
+
+    // Puts a local file out of the hub's way, never over another file
+    fn move_aside(&self, from: &str, to: &str) -> Result<()> {
+        if self.abs(to).exists() {
+            return Err(Error::Io(io::Error::new(io::ErrorKind::AlreadyExists, format!("{to} ist schon da"))));
+        }
+        self.rename(from, to)
     }
 
     fn remote_sha(&self, id: &str) -> Option<String> {
@@ -271,8 +280,8 @@ impl<H: Hub> Run<'_, H> {
                     }
                     // The track is open: its stems stay as everyone agreed to share them; the local file moves aside
                     Err(Error::Conflict(message)) => {
-                        let aside = aside_path(&path);
-                        self.rename(&path, &aside)?;
+                        let aside = aside_path(&path, |p| self.abs(p).exists());
+                        self.move_aside(&path, &aside)?;
                         self.forget(&path);
                         self.download(&path, Kind::Stem, &stem_id)?;
                         self.report.problems.push(Problem { path: aside, message });
@@ -305,7 +314,10 @@ impl<H: Hub> Run<'_, H> {
                 self.forget(&path);
                 Ok(())
             }
-            Action::KeepAside { path, to } => self.rename(&path, &to),
+            Action::KeepAside { path, to, kind, remote_id } => {
+                self.move_aside(&path, &to)?;
+                self.download(&path, kind, &remote_id)
+            }
             Action::Skip { path, reason } => {
                 if reason == SkipReason::Busy {
                     self.report.busy += 1;

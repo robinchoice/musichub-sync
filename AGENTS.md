@@ -25,6 +25,6 @@ The Tauri shell (`app/src-tauri`) only compiles in CI or where webkit2gtk is ins
 - Folder and file names come from `core::layout`. Changing a name rule renames files on every user's disk on the next sync.
 - The Tauri shell needs webkit2gtk, which the main dev laptop lacks; build it in CI.
 - The session token lives in the system keychain (`keyring`, service `org.pleasance.musichubsync`) and never reaches the webview; commands that need the hub run on the Rust side.
-- Config (`config.json`) and the sync index (`index.json`) live in the app's config/data folders, never in the sync folder.
+- Config (`config.json`) and the sync index (`index-<hub host>.json`, bound to its sync folder) live in the app's config/data folders, never in the sync folder. A new folder or hub starts with an empty index.
 - Rounds run every 20 s and right after a setting changes; there is no file watcher yet, so a bounce goes up within about 25 s.
 - `MUSICHUB_URL` points the app at another hub, e.g. a local one.

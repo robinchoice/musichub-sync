@@ -249,6 +249,22 @@ fn renaming_a_version_changes_its_label() {
 }
 
 #[test]
+fn renaming_and_saving_over_a_version_brings_the_new_content_up() {
+    let mut s = setup(FakeHub::new());
+    s.round();
+    let renamed = "Tiefgang/Nachtbus/Versionen/v1 Final.wav";
+    fs::rename(s.root.join(V1), s.root.join(renamed)).unwrap();
+    s.write(renamed, b"mix two");
+    let report = s.round();
+    assert_eq!(report.uploaded.len(), 1, "{report:?}");
+    let versions = s.syncer.hub.versions();
+    assert_eq!(versions.len(), 1);
+    assert_eq!(versions[0].label.as_deref(), Some("Final"));
+    assert_eq!(s.syncer.hub.files.borrow()[&versions[0].id], b"mix two");
+    s.settled();
+}
+
+#[test]
 fn deleting_locally_empties_it_from_the_hub_unless_only_the_owner_may() {
     let mut s = setup(FakeHub::new());
     s.round();
@@ -289,6 +305,33 @@ fn a_stem_of_an_open_track_stays_and_the_local_file_moves_aside() {
 }
 
 #[test]
+fn a_second_conflict_keeps_the_first_safety_copy() {
+    let hub = FakeHub { open_tracks: vec!["t1".into()], ..FakeHub::new() };
+    let mut s = setup(hub);
+    s.round();
+    let aside = "Tiefgang/Nachtbus/Stems/Drums (lokal).wav";
+    s.write(aside, b"first cut");
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    s.write(DRUMS, b"second cut");
+    let report = s.round();
+    assert_eq!(report.problems[0].path, "Tiefgang/Nachtbus/Stems/Drums (lokal 2).wav");
+    assert_eq!(s.read(aside), b"first cut");
+    assert_eq!(s.read("Tiefgang/Nachtbus/Stems/Drums (lokal 2).wav"), b"second cut");
+    assert_eq!(s.read(DRUMS), b"drums");
+}
+
+#[test]
+fn an_unknown_file_moves_aside_before_the_hubs_file_comes_down() {
+    let mut s = setup(FakeHub::new());
+    s.write(DRUMS, b"my own drums");
+    s.write("Tiefgang/Nachtbus/Stems/Drums (lokal).wav", b"older copy");
+    s.round();
+    assert_eq!(s.read(DRUMS), b"drums");
+    assert_eq!(s.read("Tiefgang/Nachtbus/Stems/Drums (lokal).wav"), b"older copy");
+    assert_eq!(s.read("Tiefgang/Nachtbus/Stems/Drums (lokal 2).wav"), b"my own drums");
+}
+
+#[test]
 fn new_folders_become_projects_and_tracks_and_a_loose_mix_a_track() {
     let mut s = setup(FakeHub::new());
     s.round();
@@ -304,6 +347,20 @@ fn new_folders_become_projects_and_tracks_and_a_loose_mix_a_track() {
     assert!(s.exists("Tiefgang/Kind sein/Versionen/v1 Kind sein.wav"));
     assert_eq!(sha256(&s.root.join("Demos 2026/Skizze/Stems/Bass.wav")).unwrap(), sha(b"bass"));
     s.settled();
+}
+
+#[test]
+fn a_new_folder_starts_without_the_old_folders_history() {
+    let mut s = setup(FakeHub::new());
+    s.round();
+    let new_root = s._dir.path().join("New Music Hub");
+    let hub = std::mem::replace(&mut s.syncer, Syncer::new(FakeHub::default(), &new_root, &s._dir.path().join("index.json"))).hub;
+    s.syncer.hub = hub;
+    let report = s.round();
+    assert_eq!(report.downloaded.len(), 2);
+    assert_eq!(s.syncer.hub.versions().len(), 1);
+    assert!(!s.syncer.hub.state.borrow().projects[0].tracks[0].stems.is_empty());
+    assert!(s.exists(V1) && new_root.join(V1).exists());
 }
 
 #[test]

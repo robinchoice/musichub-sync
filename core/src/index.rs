@@ -1,5 +1,6 @@
 // What both sides held after the last sync, kept in the app's data folder and never in the sync folder:
 // a manifest that syncs along can lose entries and silently undo the sync.
+// The index belongs to one folder: read for another one it would report its files as deleted.
 
 use std::fs;
 use std::io;
@@ -11,6 +12,12 @@ use crate::plan::{IndexEntry, Kind};
 
 #[derive(Serialize, Deserialize)]
 struct Stored {
+    root: String,
+    entries: Vec<StoredEntry>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredEntry {
     path: String,
     kind: String,
     remote_id: String,
@@ -19,14 +26,19 @@ struct Stored {
     sha256: Option<String>,
 }
 
-pub fn load(file: &Path) -> io::Result<Vec<IndexEntry>> {
+// Empty for a folder the index doesn't belong to
+pub fn load(file: &Path, root: &Path) -> io::Result<Vec<IndexEntry>> {
     let text = match fs::read_to_string(file) {
         Ok(text) => text,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e),
     };
-    let stored: Vec<Stored> = serde_json::from_str(&text).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let stored: Stored = serde_json::from_str(&text).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    if stored.root != root.to_string_lossy() {
+        return Ok(Vec::new());
+    }
     Ok(stored
+        .entries
         .into_iter()
         .map(|s| IndexEntry {
             path: s.path,
@@ -40,10 +52,10 @@ pub fn load(file: &Path) -> io::Result<Vec<IndexEntry>> {
 }
 
 // Written next to the target and renamed over it, so a crash never leaves half an index
-pub fn save(file: &Path, entries: &[IndexEntry]) -> io::Result<()> {
-    let stored: Vec<Stored> = entries
+pub fn save(file: &Path, root: &Path, entries: &[IndexEntry]) -> io::Result<()> {
+    let entries: Vec<StoredEntry> = entries
         .iter()
-        .map(|e| Stored {
+        .map(|e| StoredEntry {
             path: e.path.clone(),
             kind: match e.kind {
                 Kind::Version => "version".into(),
@@ -58,6 +70,7 @@ pub fn save(file: &Path, entries: &[IndexEntry]) -> io::Result<()> {
     if let Some(dir) = file.parent() {
         fs::create_dir_all(dir)?;
     }
+    let stored = Stored { root: root.to_string_lossy().into_owned(), entries };
     let tmp = file.with_extension("tmp");
     fs::write(&tmp, serde_json::to_vec_pretty(&stored)?)?;
     fs::rename(tmp, file)

@@ -8,6 +8,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use musichub_sync_core::hub::{Error, HttpHub};
+use musichub_sync_core::layout::safe_name;
 use musichub_sync_core::login;
 use musichub_sync_core::plan::SkipReason;
 use musichub_sync_core::run::{Problem, Syncer};
@@ -89,8 +90,10 @@ fn config_file(app: &AppHandle) -> PathBuf {
     app.path().app_config_dir().unwrap_or_default().join("config.json")
 }
 
-fn index_file(app: &AppHandle) -> PathBuf {
-    app.path().app_data_dir().unwrap_or_default().join("index.json")
+// One index per hub; the index itself knows which folder it belongs to
+fn index_file(app: &AppHandle, server: &str) -> PathBuf {
+    let host = server.trim_start_matches("https://").trim_start_matches("http://");
+    app.path().app_data_dir().unwrap_or_default().join(format!("index-{}.json", safe_name(host)))
 }
 
 fn load_config(app: &AppHandle) -> Config {
@@ -155,7 +158,7 @@ fn sync_loop(app: AppHandle, kicks: Receiver<()>) {
                 let server = config.server();
                 let fresh = !matches!(&syncer, Some((s, f, _)) if *s == server && f == folder);
                 if fresh {
-                    syncer = Some((server.clone(), folder.clone(), Syncer::new(HttpHub::new(&server, &token), folder, &index_file(&app))));
+                    syncer = Some((server.clone(), folder.clone(), Syncer::new(HttpHub::new(&server, &token), folder, &index_file(&app, &server))));
                 }
                 let (_, _, s) = syncer.as_mut().unwrap();
                 set_status(&app, |st| st.state = "syncing".into());
@@ -179,9 +182,13 @@ fn sync_loop(app: AppHandle, kicks: Receiver<()>) {
                     Ok(report) => {
                         notify(&app, &report.uploaded, &report.downloaded);
                         let mut problems: Vec<ProblemInfo> = report.problems.iter().map(Into::into).collect();
-                        problems.extend(report.skipped.iter().filter(|(_, r)| *r == SkipReason::NoUploadRights).map(|(path, _)| ProblemInfo {
-                            path: path.clone(),
-                            message: "Keine Upload-Rechte in diesem Projekt, die Datei bleibt lokal".into(),
+                        problems.extend(report.skipped.iter().filter_map(|(path, reason)| {
+                            let message = match reason {
+                                SkipReason::NoUploadRights => "Keine Upload-Rechte in diesem Projekt, die Datei bleibt lokal",
+                                SkipReason::Collision => "Im Hub heißt mehr als eins so, dieser Pfad bleibt außen vor",
+                                _ => return None,
+                            };
+                            Some(ProblemInfo { path: path.clone(), message: message.into() })
                         }));
                         set_status(&app, |st| {
                             st.state = if report.busy > 0 { "syncing".into() } else { "synced".into() };

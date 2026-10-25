@@ -194,6 +194,31 @@ fn renaming_a_version_file_changes_its_label() {
 }
 
 #[test]
+fn a_renamed_version_file_with_other_content_is_a_new_version_not_a_relabel() {
+    let (index, mut disk) = synced();
+    disk[0] = file("Tiefgang/Nachtbus/Versionen/v1 Final.wav", 100, OLD + 5, Some("changed"));
+    let actions = plan(&hub(), &index, &disk, NOW);
+    assert!(!actions.iter().any(|a| matches!(a, Action::Relabel { .. })), "{actions:?}");
+    assert!(actions.contains(&Action::TrashRemote { path: V1.into(), kind: Kind::Version, remote_id: "v1".into() }));
+    assert!(actions.contains(&Action::UploadVersion {
+        path: "Tiefgang/Nachtbus/Versionen/v1 Final.wav".into(),
+        track: TrackRef::Existing("t1".into()),
+        label: Some("Final".into()),
+        parent_version_id: None,
+    }));
+}
+
+#[test]
+fn a_renamed_version_file_not_yet_hashed_holds_both_names() {
+    let (index, mut disk) = synced();
+    disk[0] = file("Tiefgang/Nachtbus/Versionen/v1 Final.wav", 100, NOW - 1, None);
+    assert_eq!(
+        plan(&hub(), &index, &disk, NOW),
+        vec![Action::Skip { path: "Tiefgang/Nachtbus/Versionen/v1 Final.wav".into(), reason: SkipReason::Busy }]
+    );
+}
+
+#[test]
 fn a_label_changed_in_the_hub_renames_the_local_file() {
     let (index, disk) = synced();
     let mut state = hub();
@@ -235,8 +260,17 @@ fn deleted_in_the_hub_but_changed_locally_goes_up_again() {
 fn an_unknown_file_where_the_hubs_file_belongs_moves_aside() {
     let disk = vec![file(DRUMS, 99, OLD, Some("other"))];
     let actions = plan(&hub(), &[], &disk, NOW);
-    assert!(actions.contains(&Action::KeepAside { path: DRUMS.into(), to: "Tiefgang/Nachtbus/Stems/Drums (lokal).wav".into() }));
-    assert!(actions.contains(&Action::Download { path: DRUMS.into(), kind: Kind::Stem, remote_id: "s1".into() }));
+    let aside = |to: &str| Action::KeepAside { path: DRUMS.into(), to: to.into(), kind: Kind::Stem, remote_id: "s1".into() };
+    assert!(actions.contains(&aside("Tiefgang/Nachtbus/Stems/Drums (lokal).wav")));
+
+    // Earlier copies stay
+    let disk = vec![
+        file(DRUMS, 99, OLD, Some("other")),
+        file("Tiefgang/Nachtbus/Stems/Drums (lokal).wav", 1, OLD, None),
+        file("Tiefgang/Nachtbus/Stems/Drums (lokal 2).wav", 1, OLD, None),
+    ];
+    let actions = plan(&hub(), &[], &disk, NOW);
+    assert!(actions.contains(&aside("Tiefgang/Nachtbus/Stems/Drums (lokal 3).wav")));
 }
 
 #[test]
@@ -252,6 +286,44 @@ fn other_files_stay_local() {
             Action::Skip { path: "loose.wav".into(), reason: SkipReason::Unplaced },
         ]
     );
+}
+
+#[test]
+fn projects_named_alike_are_reported_and_left_alone() {
+    let mut state = hub();
+    let mut twin = state.projects[0].clone();
+    twin.id = "p2".into();
+    twin.tracks[0].id = "t2".into();
+    twin.tracks[0].versions[0].id = "v2".into();
+    twin.tracks[0].stems[0].id = "s2".into();
+    state.projects.push(twin);
+    // Both synced the first project earlier; a new bounce lies in its folder
+    let (index, mut disk) = synced();
+    disk.push(file("Tiefgang/Nachtbus/Versionen/Nachtbus Final.wav", 120, OLD, Some("x")));
+    disk.push(file("Demos 2026/Skizze/Stems/Bass.wav", 70, OLD, None));
+    assert_eq!(
+        plan(&state, &index, &disk, NOW),
+        vec![
+            Action::Skip { path: "Tiefgang".into(), reason: SkipReason::Collision },
+            Action::UploadStem {
+                path: "Demos 2026/Skizze/Stems/Bass.wav".into(),
+                track: TrackRef::New { project: ProjectRef::New("Demos 2026".into()), name: "Skizze".into() },
+                name: "Bass".into()
+            },
+        ]
+    );
+}
+
+#[test]
+fn stems_named_alike_block_only_that_file() {
+    let mut state = hub();
+    state.projects[0].tracks[0].stems.push(stem("s2", "Drums", 60, "drums-2"));
+    let (index, disk) = synced();
+    assert_eq!(plan(&state, &index, &disk, NOW), vec![Action::Skip { path: DRUMS.into(), reason: SkipReason::Collision }]);
+    assert_eq!(plan(&state, &[], &[], NOW), vec![
+        Action::Skip { path: DRUMS.into(), reason: SkipReason::Collision },
+        Action::Download { path: V1.into(), kind: Kind::Version, remote_id: "v1".into() },
+    ]);
 }
 
 #[test]

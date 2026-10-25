@@ -60,6 +60,8 @@ pub enum SkipReason {
     NoUploadRights,
     // Not inside a project folder, or nested too deep
     Unplaced,
+    // More than one thing in the hub would take this path; nothing under it is touched on either side
+    Collision,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -79,8 +81,8 @@ pub enum Action {
     TrashRemote { path: String, kind: Kind, remote_id: String },
     // Deleted in the hub: into the system trash
     TrashLocal { path: String },
-    // Something unknown lies where the hub's file belongs: it moves aside, the hub's file comes down
-    KeepAside { path: String, to: String },
+    // Something unknown lies where the hub's file belongs: it moves aside, then the hub's file comes down
+    KeepAside { path: String, to: String, kind: Kind, remote_id: String },
     Skip { path: String, reason: SkipReason },
 }
 
@@ -103,15 +105,57 @@ fn file_of(path: &str) -> &str {
     path.rsplit_once('/').map_or(path, |(_, file)| file)
 }
 
-// "Bass.wav" → "Bass (lokal).wav"
-pub fn aside_path(path: &str) -> String {
-    match path.rsplit_once('.') {
-        Some((stem, ext)) if !stem.ends_with('/') => format!("{stem} (lokal).{ext}"),
-        _ => format!("{path} (lokal)"),
+// "Bass.wav" → "Bass (lokal).wav", or "Bass (lokal 2).wav" and so on when that name is taken: a copy never replaces another
+pub fn aside_path(path: &str, taken: impl Fn(&str) -> bool) -> String {
+    let (stem, ext) = match path.rsplit_once('.') {
+        Some((stem, ext)) if !stem.ends_with('/') => (stem, format!(".{ext}")),
+        _ => (path, String::new()),
+    };
+    let mut n = 1;
+    loop {
+        let candidate = if n == 1 { format!("{stem} (lokal){ext}") } else { format!("{stem} (lokal {n}){ext}") };
+        if !taken(&candidate) {
+            return candidate;
+        }
+        n += 1;
     }
 }
 
+// Paths more than one project, track or file of the hub would take, e.g. two projects named alike
+fn collisions(remote: &remote::State) -> Vec<String> {
+    fn taken_twice(paths: impl Iterator<Item = String>) -> Vec<String> {
+        let mut seen = HashSet::new();
+        let mut twice = Vec::new();
+        for path in paths {
+            if !seen.insert(path.clone()) && !twice.contains(&path) {
+                twice.push(path);
+            }
+        }
+        twice
+    }
+    let mut out = taken_twice(remote.projects.iter().map(|p| safe_name(&p.name)));
+    for project in &remote.projects {
+        let project_dir = safe_name(&project.name);
+        out.extend(taken_twice(project.tracks.iter().map(|t| join(&[&project_dir, &safe_name(&t.name)]))));
+        for track in &project.tracks {
+            let track_dir = join(&[&project_dir, &safe_name(&track.name)]);
+            out.extend(taken_twice(track.versions.iter().map(|v| join(&[&track_dir, VERSIONS, &version_file(v)]))));
+            out.extend(taken_twice(track.stems.iter().map(|s| join(&[&track_dir, STEMS, &stem_file(s)]))));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 pub fn plan(remote: &remote::State, index: &[IndexEntry], disk: &[DiskFile], now: u64) -> Vec<Action> {
+    // A colliding path stays out on both sides, with everything under it, until someone renames one of the two
+    let collisions = collisions(remote);
+    let collides = |path: &str| collisions.iter().any(|c| path == c || path.strip_prefix(c.as_str()).is_some_and(|rest| rest.starts_with('/')));
+    let index: Vec<IndexEntry> = index.iter().filter(|e| !collides(&e.path)).cloned().collect();
+    let disk: Vec<DiskFile> = disk.iter().filter(|d| !collides(&d.path)).cloned().collect();
+    let mut actions: Vec<Action> = collisions.iter().map(|c| Action::Skip { path: c.clone(), reason: SkipReason::Collision }).collect();
+
     // Where every file of the hub belongs
     let mut expected: HashMap<String, Expected> = HashMap::new();
     let mut remote_path: HashMap<&str, String> = HashMap::new();
@@ -121,11 +165,17 @@ pub fn plan(remote: &remote::State, index: &[IndexEntry], disk: &[DiskFile], now
             let track_dir = safe_name(&track.name);
             for v in &track.versions {
                 let path = join(&[&project_dir, &track_dir, VERSIONS, &version_file(v)]);
+                if collides(&path) {
+                    continue;
+                }
                 remote_path.insert(&v.id, path.clone());
                 expected.insert(path, Expected { kind: Kind::Version, remote_id: &v.id, size: v.file_size, sha256: v.sha256.as_deref() });
             }
             for s in &track.stems {
                 let path = join(&[&project_dir, &track_dir, STEMS, &stem_file(s)]);
+                if collides(&path) {
+                    continue;
+                }
                 remote_path.insert(&s.id, path.clone());
                 expected.insert(path, Expected { kind: Kind::Stem, remote_id: &s.id, size: s.file_size, sha256: s.sha256.as_deref() });
             }
@@ -138,26 +188,26 @@ pub fn plan(remote: &remote::State, index: &[IndexEntry], disk: &[DiskFile], now
     let unchanged = |e: &IndexEntry, d: &DiskFile| e.size == d.size && e.modified == d.modified;
     let settled = |d: &DiskFile| now.saturating_sub(d.modified) >= SETTLE_SECS;
 
-    let mut actions = Vec::new();
     // Disk paths and index entries already dealt with
     let mut done_disk: HashSet<&str> = HashSet::new();
     let mut done_index: HashSet<&str> = HashSet::new();
 
-    // Version files renamed locally: the old name is gone, a new one with the same content and number appeared
-    for d in disk {
+    // Version files renamed locally: the old name is gone, a new one with the very same content appeared.
+    // Same number and size alone prove nothing: the file may have been saved over as well, and that
+    // content has to go up. Until the new file is hashed, both names wait.
+    for d in &disk {
         if by_path.contains_key(d.path.as_str()) || expected.contains_key(&d.path) || !file_of(folder_of(&d.path)).eq(VERSIONS) {
             continue;
         }
         let Some((number, label)) = parse_version_file(file_of(&d.path)) else { continue };
-        let renamed = index.iter().find(|e| {
+        let gone_twin = |e: &&IndexEntry| {
             e.kind == Kind::Version
                 && folder_of(&e.path) == folder_of(&d.path)
                 && !on_disk.contains_key(e.path.as_str())
                 && e.size == d.size
-                && (e.sha256.is_some() && e.sha256 == d.sha256 || parse_version_file(file_of(&e.path)).is_some_and(|(n, _)| n == number))
                 && remote_path.contains_key(e.remote_id.as_str())
-        });
-        if let Some(e) = renamed {
+        };
+        if let Some(e) = index.iter().find(|e| gone_twin(e) && e.sha256.is_some() && e.sha256 == d.sha256) {
             actions.push(Action::Relabel {
                 from: e.path.clone(),
                 to: d.path.clone(),
@@ -166,6 +216,12 @@ pub fn plan(remote: &remote::State, index: &[IndexEntry], disk: &[DiskFile], now
             });
             done_disk.insert(&d.path);
             done_index.insert(&e.path);
+        } else if d.sha256.is_none() {
+            if let Some(e) = index.iter().find(|e| gone_twin(e) && parse_version_file(file_of(&e.path)).is_some_and(|(n, _)| n == number)) {
+                actions.push(Action::Skip { path: d.path.clone(), reason: SkipReason::Busy });
+                done_disk.insert(&d.path);
+                done_index.insert(&e.path);
+            }
         }
     }
 
@@ -230,15 +286,15 @@ pub fn plan(remote: &remote::State, index: &[IndexEntry], disk: &[DiskFile], now
                 } else if !settled(d) {
                     actions.push(Action::Skip { path: path.clone(), reason: SkipReason::Busy });
                 } else {
-                    actions.push(Action::KeepAside { path: path.clone(), to: aside_path(path) });
-                    actions.push(Action::Download { path: path.clone(), kind: x.kind, remote_id: x.remote_id.into() });
+                    let to = aside_path(path, |p| on_disk.contains_key(p));
+                    actions.push(Action::KeepAside { path: path.clone(), to, kind: x.kind, remote_id: x.remote_id.into() });
                 }
             }
         }
     }
 
     // Files the hub doesn't have
-    for d in disk {
+    for d in &disk {
         if done_disk.contains(d.path.as_str()) {
             continue;
         }
