@@ -26,16 +26,19 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            args: --target universal-apple-darwin --bundles dmg
+            args: --target universal-apple-darwin --bundles app,dmg
             targets: aarch64-apple-darwin,x86_64-apple-darwin
+            updater: target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
             out: |
               target/universal-apple-darwin/release/bundle/dmg/*.dmg
               target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz*
           - os: windows-latest
             args: --bundles msi
+            updater: target/release/bundle/msi/*.msi.sig
             out: target/release/bundle/msi/*.msi*
           - os: ubuntu-22.04
             args: --bundles appimage,deb
+            updater: target/release/bundle/appimage/*.AppImage.sig
             out: |
               target/release/bundle/appimage/*.AppImage*
               target/release/bundle/deb/*.deb
@@ -91,6 +94,10 @@ jobs:
         run: |
           if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then updater=(--config '{"bundle":{"createUpdaterArtifacts":true}}'); fi
           bunx tauri build ${{ matrix.args }} "${updater[@]}"
+      - name: Check the update bundle
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: ls ${{ matrix.updater }}
       - name: Check signature and notarization
         if: runner.os == 'macOS' && github.event_name != 'pull_request'
         run: |
