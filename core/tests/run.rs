@@ -231,6 +231,44 @@ fn the_first_round_brings_everything_down_the_second_has_nothing_to_do() {
 }
 
 #[test]
+fn remote_dot_names_cannot_overwrite_files_outside_the_sync_folder() {
+    let hub = FakeHub::new();
+    {
+        let mut state = hub.state.borrow_mut();
+        state.projects[0].name = ".. ..".into();
+        state.projects[0].tracks[0].name = "Samples".into();
+    }
+    let mut s = setup(hub);
+    s.write("../Samples/Stems/Drums.wav", b"keep me");
+    let report = s.round();
+    assert!(report.problems.is_empty(), "{report:?}");
+    assert_eq!(report.downloaded.len(), 2);
+    assert_eq!(s.read("../Samples/Stems/Drums.wav"), b"keep me");
+    assert_eq!(s.read("Ohne Namen/Samples/Stems/Drums.wav"), b"drums");
+    assert_eq!(s.read("Ohne Namen/Samples/Versionen/v1 Rough Mix.wav"), b"mix one");
+    s.settled();
+}
+
+#[test]
+fn remote_extensions_cannot_write_outside_the_audio_subfolders() {
+    let hub = FakeHub::new();
+    hub.track_mut("t1", |t| {
+        t.versions[0].original_file_name = "x./y".into();
+        t.stems[0].name = ". .".into();
+        t.stems[0].original_file_name = "x./y".into();
+    });
+    let mut s = setup(hub);
+    s.write("Tiefgang/Nachtbus/y", b"keep me");
+    let report = s.round();
+    assert!(report.problems.is_empty(), "{report:?}");
+    assert_eq!(report.downloaded.len(), 2);
+    assert_eq!(s.read("Tiefgang/Nachtbus/y"), b"keep me");
+    assert_eq!(s.read(V1), b"mix one");
+    assert_eq!(s.read("Tiefgang/Nachtbus/Stems/Ohne Namen.wav"), b"drums");
+    s.settled();
+}
+
+#[test]
 fn a_bounce_goes_up_and_takes_the_versions_name() {
     let mut s = setup(FakeHub::new());
     s.round();

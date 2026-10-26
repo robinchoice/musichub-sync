@@ -19,7 +19,7 @@ pub fn safe_name(name: &str) -> String {
         .chars()
         .map(|c| if "/\\:*?\"<>|".contains(c) || c.is_control() { '-' } else { c })
         .collect();
-    let trimmed = cleaned.trim().trim_end_matches('.').trim().to_string();
+    let trimmed = cleaned.trim().trim_end_matches(|c: char| c == '.' || c.is_whitespace()).to_string();
     if trimmed.is_empty() {
         "Ohne Namen".to_string()
     } else {
@@ -85,12 +85,12 @@ pub fn label_of(version: &Version) -> String {
 }
 
 pub fn version_file(version: &Version) -> String {
-    let ext = extension(&version.original_file_name).unwrap_or_else(|| "wav".into());
+    let ext = extension(&version.original_file_name).filter(|ext| AUDIO_EXTENSIONS.contains(&ext.as_str())).unwrap_or_else(|| "wav".into());
     format!("v{} {}.{}", version.version_number, safe_name(&label_of(version)), ext)
 }
 
 pub fn stem_file(stem: &Stem) -> String {
-    let ext = extension(&stem.original_file_name).unwrap_or_else(|| "wav".into());
+    let ext = extension(&stem.original_file_name).filter(|ext| AUDIO_EXTENSIONS.contains(&ext.as_str())).unwrap_or_else(|| "wav".into());
     format!("{}.{}", safe_name(&stem.name), ext)
 }
 
@@ -131,6 +131,15 @@ mod tests {
     }
 
     #[test]
+    fn remote_extensions_cannot_add_path_components() {
+        for file in ["x./y", "x.\\y", "x.exe", "x.", "x"] {
+            assert_eq!(version_file(&version(1, Some("Mix"), file)), "v1 Mix.wav");
+            let stem = Stem { id: "s".into(), name: ". .".into(), original_file_name: file.into(), file_size: 1, sha256: None };
+            assert_eq!(stem_file(&stem), "Ohne Namen.wav");
+        }
+    }
+
+    #[test]
     fn a_renamed_version_file_gives_number_and_new_label() {
         assert_eq!(parse_version_file("v3 Final.wav"), Some((3, "Final".into())));
         assert_eq!(parse_version_file("V12 - Master.aif"), Some((12, "Master".into())));
@@ -165,6 +174,10 @@ mod tests {
     fn names_stay_valid_on_every_system() {
         assert_eq!(safe_name("Tiefgang: Live?"), "Tiefgang- Live-");
         assert_eq!(safe_name("  ..."), "Ohne Namen");
+        assert_eq!(safe_name(".. .."), "Ohne Namen");
+        assert_eq!(safe_name(". ."), "Ohne Namen");
+        assert_eq!(safe_name(".. \u{2003}.."), "Ohne Namen");
         assert_eq!(safe_name("EP."), "EP");
+        assert_eq!(safe_name(".Mix"), ".Mix");
     }
 }

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::hub::{Error, Hub, Result};
 use crate::layout::{aside_path, safe_name, stem_file, stem_name, version_file, STEMS, VERSIONS};
@@ -98,7 +98,7 @@ impl<H: Hub> Syncer<H> {
         // Forget what is gone on both sides
         let ids: Vec<&str> = remote.projects.iter().flat_map(|p| &p.tracks).flat_map(|t| t.versions.iter().map(|v| v.id.as_str()).chain(t.stems.iter().map(|s| s.id.as_str()))).collect();
         let root = self.root.clone();
-        run.entries.retain(|e| ids.contains(&e.remote_id.as_str()) || root.join(&e.path).exists());
+        run.entries.retain(|e| ids.contains(&e.remote_id.as_str()) || checked_path(&root, &e.path).is_ok_and(|p| p.exists()));
         save(&run.entries)?;
         result.map(|()| run.report)
     }
@@ -134,13 +134,20 @@ fn parent_dir(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(dir, _)| dir)
 }
 
+fn checked_path(root: &Path, path: &str) -> Result<PathBuf> {
+    if path.is_empty() || !Path::new(path).components().all(|c| matches!(c, Component::Normal(_))) {
+        return Err(Error::Io(io::Error::new(io::ErrorKind::InvalidInput, "Invalid sync path")));
+    }
+    Ok(root.join(path))
+}
+
 impl<H: Hub> Run<'_, H> {
-    fn abs(&self, path: &str) -> PathBuf {
-        self.root.join(path)
+    fn abs(&self, path: &str) -> Result<PathBuf> {
+        checked_path(self.root, path)
     }
 
     fn remember(&mut self, path: &str, kind: Kind, remote_id: &str, sha256: Option<String>) -> Result<()> {
-        let meta = fs::metadata(self.abs(path))?;
+        let meta = fs::metadata(self.abs(path)?)?;
         self.forget(path);
         self.entries.push(IndexEntry {
             path: path.into(),
@@ -161,14 +168,16 @@ impl<H: Hub> Run<'_, H> {
         if from == to {
             return Ok(());
         }
-        fs::create_dir_all(self.abs(parent_dir(to)))?;
-        fs::rename(self.abs(from), self.abs(to))?;
+        let source = self.abs(from)?;
+        let target = self.abs(to)?;
+        fs::create_dir_all(target.parent().unwrap())?;
+        fs::rename(source, target)?;
         Ok(())
     }
 
     // Puts a local file out of the hub's way, never over another file
     fn move_aside(&self, from: &str, to: &str) -> Result<()> {
-        if self.abs(to).exists() {
+        if self.abs(to)?.exists() {
             return Err(Error::Io(io::Error::new(io::ErrorKind::AlreadyExists, format!("{to} ist schon da"))));
         }
         self.rename(from, to)
@@ -185,19 +194,20 @@ impl<H: Hub> Run<'_, H> {
     }
 
     fn sha_of(&self, path: &str) -> Result<String> {
-        Ok(scan::sha256(&self.abs(path))?)
+        Ok(scan::sha256(&self.abs(path)?)?)
     }
 
     fn download(&mut self, path: &str, kind: Kind, remote_id: &str) -> Result<()> {
         let dir = parent_dir(path);
-        fs::create_dir_all(self.abs(dir))?;
+        let target = self.abs(path)?;
+        fs::create_dir_all(self.abs(dir)?)?;
         let name = path.rsplit('/').next().unwrap_or(path);
-        let part = self.abs(&format!("{dir}/.musichub-{name}.part"));
+        let part = self.abs(&format!("{dir}/.musichub-{name}.part"))?;
         if let Err(e) = self.hub.download(kind, remote_id, &part) {
             let _ = fs::remove_file(&part);
             return Err(e);
         }
-        fs::rename(&part, self.abs(path))?;
+        fs::rename(&part, target)?;
         let sha = match self.remote_sha(remote_id) {
             Some(sha) => sha,
             None => self.sha_of(path)?,
@@ -266,10 +276,10 @@ impl<H: Hub> Run<'_, H> {
             Action::UploadVersion { path, track, label, parent_version_id } => {
                 let track_id = self.track(&track)?;
                 let sha = self.sha_of(&path)?;
-                let version = self.hub.upload_version(&track_id, &self.abs(&path), label.as_deref(), parent_version_id.as_deref(), &sha)?;
+                let version = self.hub.upload_version(&track_id, &self.abs(&path)?, label.as_deref(), parent_version_id.as_deref(), &sha)?;
                 let to = format!("{}/{VERSIONS}/{}", Self::track_dir(&path), version_file(&version));
                 // Saved over an existing version: the old one comes down again in the next round
-                let target = if !self.abs(&to).exists() || to == path { to } else { path.clone() };
+                let target = if !self.abs(&to)?.exists() || to == path { to } else { path.clone() };
                 self.rename(&path, &target)?;
                 self.forget(&path);
                 self.remember(&target, Kind::Version, &version.id, Some(sha))?;
@@ -279,9 +289,9 @@ impl<H: Hub> Run<'_, H> {
             Action::UploadStem { path, track, name } => {
                 let track_id = self.track(&track)?;
                 let sha = self.sha_of(&path)?;
-                let stem = self.hub.upload_stem(&track_id, &self.abs(&path), &name, &sha)?;
+                let stem = self.hub.upload_stem(&track_id, &self.abs(&path)?, &name, &sha)?;
                 let to = format!("{}/{STEMS}/{}", Self::track_dir(&path), stem_file(&stem));
-                let target = if !self.abs(&to).exists() || to == path { to } else { path.clone() };
+                let target = if !self.abs(&to)?.exists() || to == path { to } else { path.clone() };
                 self.rename(&path, &target)?;
                 self.forget(&path);
                 self.remember(&target, Kind::Stem, &stem.id, Some(sha))?;
@@ -291,7 +301,7 @@ impl<H: Hub> Run<'_, H> {
             Action::ReplaceStem { path, stem_id } => {
                 let track_id = self.track_of_stem(&stem_id).unwrap_or_default();
                 let sha = self.sha_of(&path)?;
-                match self.hub.replace_stem(&track_id, &stem_id, &self.abs(&path), &sha) {
+                match self.hub.replace_stem(&track_id, &stem_id, &self.abs(&path)?, &sha) {
                     Ok(_) => {
                         self.remember(&path, Kind::Stem, &stem_id, Some(sha))?;
                         self.report.uploaded.push(path);
@@ -299,7 +309,7 @@ impl<H: Hub> Run<'_, H> {
                     }
                     // The track is open: its stems stay as everyone agreed to share them; the local file moves aside
                     Err(Error::Conflict(message)) => {
-                        let aside = aside_path(&path, |p| self.abs(p).exists());
+                        let aside = aside_path(&path, |p| self.abs(p).is_ok_and(|p| p.exists()));
                         self.move_aside(&path, &aside)?;
                         self.forget(&path);
                         self.download(&path, Kind::Stem, &stem_id)?;
@@ -329,7 +339,7 @@ impl<H: Hub> Run<'_, H> {
                 Err(e) => Err(e),
             },
             Action::TrashLocal { path } => {
-                trash::delete(self.abs(&path)).map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
+                trash::delete(self.abs(&path)?).map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
                 self.forget(&path);
                 Ok(())
             }
@@ -350,5 +360,23 @@ impl<H: Hub> Run<'_, H> {
                 Ok(())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_paths_reject_traversal_and_absolute_paths() {
+        let root = Path::new("sync");
+        for path in ["", ".", "..", "../outside.wav", "Project/../outside.wav", "/outside.wav"] {
+            assert!(matches!(checked_path(root, path), Err(Error::Io(e)) if e.kind() == io::ErrorKind::InvalidInput), "{path:?}");
+        }
+        #[cfg(windows)]
+        for path in [r"C:\outside.wav", r"C:outside.wav", r"\\server\share\outside.wav", r"Project\..\outside.wav"] {
+            assert!(checked_path(root, path).is_err(), "{path:?}");
+        }
+        assert_eq!(checked_path(root, "Project/Track/Stems/Drums.wav").unwrap(), root.join("Project/Track/Stems/Drums.wav"));
     }
 }
