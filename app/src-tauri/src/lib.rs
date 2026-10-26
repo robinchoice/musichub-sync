@@ -8,8 +8,10 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use musichub_sync_core::hub::{Error, HttpHub};
+use musichub_sync_core::layout::file_of;
 use musichub_sync_core::login;
 use musichub_sync_core::plan::SkipReason;
+use musichub_sync_core::remote;
 use musichub_sync_core::run::{Problem, Syncer};
 use serde::{Deserialize, Serialize};
 use tauri::image::Image;
@@ -51,6 +53,17 @@ struct ProjectInfo {
     name: String,
     tracks: usize,
     bytes: u64,
+}
+
+impl From<&remote::Project> for ProjectInfo {
+    fn from(p: &remote::Project) -> Self {
+        ProjectInfo {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            tracks: p.tracks.len(),
+            bytes: p.tracks.iter().map(|t| t.versions.iter().map(|v| v.file_size).sum::<u64>() + t.stems.iter().map(|s| s.file_size).sum::<u64>()).sum(),
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Default)]
@@ -172,18 +185,7 @@ fn sync_loop(app: AppHandle, kicks: Receiver<()>) {
                 let result = s.run(&config.excluded, now(), || *app.state::<Shared>().config.lock().unwrap() != config);
                 let projects = s
                     .state()
-                    .map(|state| {
-                        state
-                            .projects
-                            .iter()
-                            .map(|p| ProjectInfo {
-                                id: p.id.clone(),
-                                name: p.name.clone(),
-                                tracks: p.tracks.len(),
-                                bytes: p.tracks.iter().map(|t| t.versions.iter().map(|v| v.file_size).sum::<u64>() + t.stems.iter().map(|s| s.file_size).sum::<u64>()).sum(),
-                            })
-                            .collect()
-                    })
+                    .map(|state| state.projects.iter().map(Into::into).collect())
                     .unwrap_or_default();
                 match result {
                     Ok(report) => {
@@ -232,7 +234,7 @@ fn sync_loop(app: AppHandle, kicks: Receiver<()>) {
 }
 
 fn notify(app: &AppHandle, uploaded: &[String], downloaded: &[String]) {
-    let name = |path: &String| path.rsplit('/').next().unwrap_or(path).to_string();
+    let name = |path: &String| file_of(path).to_string();
     let show = |title: String, body: String| {
         let _ = app.notification().builder().title(title).body(body).show();
     };
@@ -363,16 +365,7 @@ fn projects(shared: State<Shared>) -> Result<Vec<ProjectInfo>, String> {
     let hub = HttpHub::new(&server, &token);
     use musichub_sync_core::hub::Hub;
     let state = hub.state().map_err(|e| e.to_string())?.unwrap_or_default();
-    Ok(state
-        .projects
-        .iter()
-        .map(|p| ProjectInfo {
-            id: p.id.clone(),
-            name: p.name.clone(),
-            tracks: p.tracks.len(),
-            bytes: p.tracks.iter().map(|t| t.versions.iter().map(|v| v.file_size).sum::<u64>() + t.stems.iter().map(|s| s.file_size).sum::<u64>()).sum(),
-        })
-        .collect())
+    Ok(state.projects.iter().map(Into::into).collect())
 }
 
 #[tauri::command]

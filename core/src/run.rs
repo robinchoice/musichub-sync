@@ -1,12 +1,12 @@
 // One sync round: fetch the hub's state, scan the folder, plan, carry the plan out, keep the index.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use crate::hub::{Error, Hub, Result};
-use crate::layout::{aside_path, safe_name, stem_file, stem_name, version_file, STEMS, VERSIONS};
+use crate::layout::{aside_path, file_of, folder_of, safe_name, stem_file, stem_name, version_file, STEMS, VERSIONS};
 use crate::plan::{plan, Action, IndexEntry, Kind, ProjectRef, SkipReason, TrackRef};
 use crate::{index, remote, scan};
 
@@ -96,9 +96,8 @@ impl<H: Hub> Syncer<H> {
         }
 
         // Forget what is gone on both sides
-        let ids: Vec<&str> = remote.projects.iter().flat_map(|p| &p.tracks).flat_map(|t| t.versions.iter().map(|v| v.id.as_str()).chain(t.stems.iter().map(|s| s.id.as_str()))).collect();
-        let root = self.root.clone();
-        run.entries.retain(|e| ids.contains(&e.remote_id.as_str()) || checked_path(&root, &e.path).is_ok_and(|p| p.exists()));
+        let ids: HashSet<&str> = remote.projects.iter().flat_map(|p| &p.tracks).flat_map(|t| t.versions.iter().map(|v| v.id.as_str()).chain(t.stems.iter().map(|s| s.id.as_str()))).collect();
+        run.entries.retain(|e| ids.contains(e.remote_id.as_str()) || checked_path(&self.root, &e.path).is_ok_and(|p| p.exists()));
         save(&run.entries)?;
         result.map(|()| run.report)
     }
@@ -128,10 +127,6 @@ struct Run<'a, H: Hub> {
     // Created during this round, by name
     projects: HashMap<String, String>,
     tracks: HashMap<(String, String), String>,
-}
-
-fn parent_dir(path: &str) -> &str {
-    path.rsplit_once('/').map_or("", |(dir, _)| dir)
 }
 
 fn checked_path(root: &Path, path: &str) -> Result<PathBuf> {
@@ -198,10 +193,10 @@ impl<H: Hub> Run<'_, H> {
     }
 
     fn download(&mut self, path: &str, kind: Kind, remote_id: &str) -> Result<()> {
-        let dir = parent_dir(path);
+        let dir = folder_of(path);
         let target = self.abs(path)?;
         fs::create_dir_all(self.abs(dir)?)?;
-        let name = path.rsplit('/').next().unwrap_or(path);
+        let name = file_of(path);
         let part = self.abs(&format!("{dir}/.musichub-{name}.part"))?;
         if let Err(e) = self.hub.download(kind, remote_id, &part) {
             let _ = fs::remove_file(&part);

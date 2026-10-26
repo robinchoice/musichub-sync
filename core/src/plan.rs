@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::layout::{
-    aside_path, is_aside, is_audio, is_noise, parse_version_file, safe_name, stem_file, stem_name, version_file, STEMS, VERSIONS,
+    aside_path, file_of, folder_of, is_aside, is_audio, is_noise, parse_version_file, safe_name, stem_file, stem_name, version_file, STEMS, VERSIONS,
 };
 use crate::remote;
 
@@ -97,14 +97,6 @@ struct Expected<'a> {
 
 fn join(parts: &[&str]) -> String {
     parts.join("/")
-}
-
-fn folder_of(path: &str) -> &str {
-    path.rsplit_once('/').map_or("", |(dir, _)| dir)
-}
-
-fn file_of(path: &str) -> &str {
-    path.rsplit_once('/').map_or(path, |(_, file)| file)
 }
 
 // Paths more than one project, track or file of the hub would take, e.g. two projects named alike.

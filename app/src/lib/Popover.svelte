@@ -32,15 +32,6 @@
   function who(e) {
     return e.user?.name ?? e.guestName ?? 'Jemand';
   }
-  function what(e) {
-    const v = e.version ? `V${e.version.versionNumber}` : '';
-    if (e.type === 'version') return `hat <b>${v}</b> von <b>${escape(e.track.name)}</b> hochgeladen`;
-    if (e.type === 'approval') return `hat <b>${v}</b> von <b>${escape(e.track.name)}</b> ${e.status === 'rejected' ? 'abgelehnt' : 'freigegeben'}`;
-    return `zu <b>${v}</b> · <b>${escape(e.track.name)}</b>: „${escape((e.body ?? '').slice(0, 80))}“`;
-  }
-  function escape(s) {
-    return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
-  }
   function initials(name) {
     return name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
   }
@@ -100,10 +91,18 @@
 <div class="sec">Neu in deinen Projekten</div>
 <ul class="feed grow-list">
   {#each events as e (e.type + e.id)}
+    {@const version = e.version ? `V${e.version.versionNumber}` : ''}
     <li>
       <span class="av" style="background: {color(who(e))}">{initials(who(e))}</span>
       <div class="what">
-        <b>{who(e)}</b> {@html what(e)}
+        <b>{who(e)}</b>
+        {#if e.type === 'version'}
+          hat <b>{version}</b> von <b>{e.track.name}</b> hochgeladen
+        {:else if e.type === 'approval'}
+          hat <b>{version}</b> von <b>{e.track.name}</b> {e.status === 'rejected' ? 'abgelehnt' : 'freigegeben'}
+        {:else}
+          zu <b>{version}</b> · <b>{e.track.name}</b>: „{(e.body ?? '').slice(0, 80)}“
+        {/if}
         <div class="muted small">{e.project.name} · {ago(e.createdAt)}</div>
       </div>
       <button class="act" onclick={() => invoke('open_hub', { path: `/projects/${e.project.id}/tracks/${e.track.id}` })}>{action[e.type]} ↗</button>

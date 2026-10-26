@@ -1,5 +1,6 @@
 // What lies in the sync folder now
 
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::Path;
@@ -33,8 +34,9 @@ pub fn modified_secs(meta: &fs::Metadata) -> u64 {
 pub fn scan(root: &Path, index: &[IndexEntry], now: u64) -> io::Result<Vec<DiskFile>> {
     let mut files = Vec::new();
     walk(root, root, 0, &mut files)?;
+    let known_files: HashSet<_> = index.iter().map(|e| (e.path.as_str(), e.size, e.modified)).collect();
     for file in &mut files {
-        let known = index.iter().any(|e| e.path == file.path && e.size == file.size && e.modified == file.modified);
+        let known = known_files.contains(&(file.path.as_str(), file.size, file.modified));
         if !known && now.saturating_sub(file.modified) >= crate::plan::SETTLE_SECS {
             file.sha256 = sha256(&root.join(&file.path)).ok();
         }

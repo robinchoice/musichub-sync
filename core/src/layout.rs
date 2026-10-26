@@ -13,6 +13,14 @@ pub const STEMS: &str = "Stems";
 // Same list as SUPPORTED_EXTENSIONS in music-hub's shared package
 pub const AUDIO_EXTENSIONS: [&str; 6] = ["wav", "mp3", "flac", "aiff", "aif", "aifc"];
 
+pub fn folder_of(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(dir, _)| dir)
+}
+
+pub fn file_of(path: &str) -> &str {
+    path.rsplit_once('/').map_or(path, |(_, file)| file)
+}
+
 // Characters no file system takes, and names Windows reserves
 pub fn safe_name(name: &str) -> String {
     let cleaned: String = name
