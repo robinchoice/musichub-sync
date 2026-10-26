@@ -30,13 +30,22 @@ pub struct Syncer<H: Hub> {
     pub hub: H,
     root: PathBuf,
     index_file: PathBuf,
+    // Whose folder this is, e.g. the email; the index is bound to it
+    account: String,
     // The last state the hub sent; it answers "unchanged" without one
     state: Option<remote::State>,
 }
 
 impl<H: Hub> Syncer<H> {
-    pub fn new(hub: H, root: &Path, index_file: &Path) -> Self {
-        Syncer { hub, root: root.into(), index_file: index_file.into(), state: None }
+    // The index lives in `index_dir`, one file per hub and folder
+    pub fn new(hub: H, root: &Path, index_dir: &Path, account: &str) -> Self {
+        let index_file = index::file_for(index_dir, &hub.origin(), root);
+        // The single index.json from before is this folder's if hub and folder match; load checks that
+        let legacy = index_dir.join("index.json");
+        if legacy.exists() && !index_file.exists() {
+            let _ = fs::rename(&legacy, &index_file);
+        }
+        Syncer { hub, root: root.into(), index_file, account: account.into(), state: None }
     }
 
     pub fn state(&self) -> Option<&remote::State> {
@@ -59,7 +68,7 @@ impl<H: Hub> Syncer<H> {
         let remote = remote::State { projects };
 
         fs::create_dir_all(&self.root)?;
-        let mut entries: Vec<IndexEntry> = index::load(&self.index_file, &self.hub.origin(), &self.root)?;
+        let mut entries: Vec<IndexEntry> = index::load(&self.index_file, &self.hub.origin(), &self.account, &self.root)?;
         let kept: Vec<IndexEntry> = entries.iter().filter(|e| outside(&e.path)).cloned().collect();
         entries.retain(|e| !outside(&e.path));
         let disk: Vec<_> = scan::scan(&self.root, &entries, now)?.into_iter().filter(|d| !outside(&d.path)).collect();
@@ -68,7 +77,7 @@ impl<H: Hub> Syncer<H> {
         run.report.skipped.extend(shadowed.iter().map(|p| (safe_name(&p.name), SkipReason::Collision)));
         // Written after every action: a crash mid-round must not leave an index that calls a renamed file deleted
         let origin = self.hub.origin();
-        let save = |entries: &[IndexEntry]| index::save(&self.index_file, &origin, &self.root, &[entries, &kept].concat());
+        let save = |entries: &[IndexEntry]| index::save(&self.index_file, &origin, &self.account, &self.root, &[entries, &kept].concat());
         let mut result = Ok(());
         for action in plan(&remote, &run.entries, &disk, now) {
             if stop() {

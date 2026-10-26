@@ -18,7 +18,11 @@
   let chosen = $state({});
 
   $effect(() => {
-    if (info.status.state === 'setup' && step < 3) step = 3;
+    // Logged in: on to the folder, which differs for an account other than the last one
+    if (info.status.state === 'setup' && step < 3) {
+      step = 3;
+      folder = info.folder;
+    }
   });
 
   $effect(() => {

@@ -1,7 +1,7 @@
 // Tray app: the sync runs in a background thread, the popover reads its status and starts actions.
 // The session token stays in the system keychain and on the Rust side; the popover never sees it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -30,6 +30,8 @@ struct Config {
     server: Option<String>,
     folder: Option<PathBuf>,
     email: Option<String>,
+    // Whose folder it is; stays after a logout, so another account gets a folder of its own
+    account: Option<String>,
     excluded: Vec<String>,
     paused: bool,
     // Set once the user went through the setup
@@ -89,8 +91,8 @@ fn config_file(app: &AppHandle) -> PathBuf {
     app.path().app_config_dir().unwrap_or_default().join("config.json")
 }
 
-fn index_file(app: &AppHandle) -> PathBuf {
-    app.path().app_data_dir().unwrap_or_default().join("index.json")
+fn index_dir(app: &AppHandle) -> PathBuf {
+    app.path().app_data_dir().unwrap_or_default()
 }
 
 fn load_config(app: &AppHandle) -> Config {
@@ -161,7 +163,7 @@ fn sync_loop(app: AppHandle, kicks: Receiver<()>) {
             (Some(token), Some(folder)) => {
                 let fresh = !matches!(&syncer, Some((s, f, t, _)) if *s == server && f == folder && *t == token);
                 if fresh {
-                    syncer = Some((server.clone(), folder.clone(), token.clone(), Syncer::new(HttpHub::new(&server, &token), folder, &index_file(&app))));
+                    syncer = Some((server.clone(), folder.clone(), token.clone(), Syncer::new(HttpHub::new(&server, &token), folder, &index_dir(&app), config.account.as_deref().unwrap_or_default())));
                 }
                 let (_, _, _, s) = syncer.as_mut().unwrap();
                 set_status(&app, |st| st.state = "syncing".into());
@@ -284,6 +286,15 @@ fn login_start(app: AppHandle, shared: State<Shared>) -> Result<serde_json::Valu
                     let shared = app.state::<Shared>();
                     let config = {
                         let mut config = shared.config.lock().unwrap();
+                        let account = session.user.email.to_lowercase();
+                        if config.account.as_ref().is_some_and(|a| *a != account) {
+                            // Another account: the setup asks again, suggesting a folder next to the old one
+                            let parent = config.folder.as_deref().and_then(Path::parent).map(Path::to_path_buf).unwrap_or_else(|| app.path().home_dir().unwrap_or_default());
+                            config.folder = Some(parent.join(format!("Music Hub ({account})")));
+                            config.excluded.clear();
+                            config.ready = false;
+                        }
+                        config.account = Some(account);
                         config.email = Some(session.user.email);
                         config.clone()
                     };

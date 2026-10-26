@@ -195,7 +195,7 @@ fn setup(hub: FakeHub) -> Setup {
     private_trash();
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("Music Hub");
-    let syncer = Syncer::new(hub, &root, &dir.path().join("index.json"));
+    let syncer = Syncer::new(hub, &root, dir.path(), "a@band.de");
     Setup { _dir: dir, root, syncer }
 }
 
@@ -297,7 +297,7 @@ fn a_crash_mid_round_does_not_trash_the_version_saved_over_before_it() {
     let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.syncer.run(&[], later(), || false)));
     assert!(crashed.is_err());
     // The app starts again
-    let hub = std::mem::replace(&mut s.syncer, Syncer::new(FakeHub::default(), &s.root, &s._dir.path().join("index.json"))).hub;
+    let hub = std::mem::replace(&mut s.syncer, Syncer::new(FakeHub::default(), &s.root, s._dir.path(), "a@band.de")).hub;
     s.syncer.hub = FakeHub { crash_at_upload: None, ..hub };
     s.round();
     // The first version (id v2) had its file renamed to "v2 Rough Mix.wav" before the crash; that must not count as deleted
@@ -442,7 +442,7 @@ fn a_new_folder_starts_without_the_old_folders_history() {
     let mut s = setup(FakeHub::new());
     s.round();
     let new_root = s._dir.path().join("New Music Hub");
-    let hub = std::mem::replace(&mut s.syncer, Syncer::new(FakeHub::default(), &new_root, &s._dir.path().join("index.json"))).hub;
+    let hub = std::mem::replace(&mut s.syncer, Syncer::new(FakeHub::default(), &new_root, s._dir.path(), "a@band.de")).hub;
     s.syncer.hub = hub;
     let report = s.round();
     assert_eq!(report.downloaded.len(), 2);
@@ -455,11 +455,70 @@ fn a_new_folder_starts_without_the_old_folders_history() {
 fn another_hub_starts_without_this_hubs_history() {
     let mut s = setup(FakeHub::new());
     s.round();
-    let index = s._dir.path().join("index.json");
-    s.syncer = Syncer::new(FakeHub { origin: "other".into(), ..Default::default() }, &s.root, &index);
+    let index = s._dir.path().to_path_buf();
+    s.syncer = Syncer::new(FakeHub { origin: "other".into(), ..Default::default() }, &s.root, &index, "a@band.de");
     s.round();
     assert_eq!(s.read(V1), b"mix one");
     assert_eq!(s.syncer.hub.state.borrow().projects.len(), 1, "the folder's content went up to the other hub");
+}
+
+#[test]
+fn a_folder_synced_for_another_account_is_left_alone() {
+    let mut s = setup(FakeHub::new());
+    s.round();
+    let index = s._dir.path().to_path_buf();
+    let hub = std::mem::replace(&mut s.syncer, Syncer::new(FakeHub::default(), &s.root, &index, "b@band.de")).hub;
+    // B sees nothing of A's projects: with A's index it would trash them, without one upload them
+    *hub.state.borrow_mut() = Default::default();
+    s.syncer.hub = hub;
+    let refused = s.syncer.run(&[], later(), || false);
+    assert!(matches!(refused, Err(Error::Io(ref e)) if e.to_string().contains("a@band.de")), "{refused:?}");
+    assert_eq!(s.read(V1), b"mix one");
+    assert!(s.syncer.hub.state.borrow().projects.is_empty());
+}
+
+#[test]
+fn a_folder_stays_another_accounts_after_syncing_a_folder_of_ones_own() {
+    let mut s = setup(FakeHub::new());
+    s.round();
+    let index = s._dir.path().to_path_buf();
+    let own = s._dir.path().join("Music Hub (b@band.de)");
+    let hub = std::mem::replace(&mut s.syncer, Syncer::new(FakeHub::default(), &own, &index, "b@band.de")).hub;
+    *hub.state.borrow_mut() = Default::default();
+    s.syncer.hub = hub;
+    s.round();
+    let hub = std::mem::replace(&mut s.syncer, Syncer::new(FakeHub::default(), &s.root, &index, "b@band.de")).hub;
+    s.syncer.hub = hub;
+    assert!(s.syncer.run(&[], later(), || false).is_err());
+    assert!(s.syncer.hub.state.borrow().projects.is_empty(), "A's files went up to B");
+}
+
+#[test]
+fn the_single_index_from_before_carries_over() {
+    let mut s = setup(FakeHub::new());
+    s.round();
+    let dir = s._dir.path().to_path_buf();
+    let file = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).find(|p| p.file_name().unwrap().to_string_lossy().starts_with("index-")).unwrap();
+    fs::rename(file, dir.join("index.json")).unwrap();
+    let hub = std::mem::replace(&mut s.syncer, Syncer::new(FakeHub::default(), &s.root, &dir, "a@band.de")).hub;
+    s.syncer.hub = hub;
+    assert!(!dir.join("index.json").exists());
+    // With the old index a deletion is known as one; without it the stem would come down again
+    fs::remove_file(s.root.join(DRUMS)).unwrap();
+    let report = s.round();
+    assert!(report.downloaded.is_empty() && !s.exists(DRUMS), "{report:?}");
+}
+
+#[test]
+fn an_index_from_before_accounts_belongs_to_whoever_syncs_next() {
+    let mut s = setup(FakeHub::new());
+    let index = s._dir.path().to_path_buf();
+    let hub = std::mem::replace(&mut s.syncer, Syncer::new(FakeHub::default(), &s.root, &index, "")).hub;
+    s.syncer.hub = hub;
+    s.round();
+    let hub = std::mem::replace(&mut s.syncer, Syncer::new(FakeHub::default(), &s.root, &index, "a@band.de")).hub;
+    s.syncer.hub = hub;
+    s.settled();
 }
 
 #[test]
