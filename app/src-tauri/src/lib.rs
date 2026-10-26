@@ -21,10 +21,12 @@ use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_positioner::{Position, WindowExt};
+use tauri_plugin_updater::{Update, UpdaterExt};
 
 const DEFAULT_SERVER: &str = "https://hub.pleasance.org";
 const ROUND: Duration = Duration::from_secs(20);
 const KEYRING_SERVICE: &str = "org.pleasance.musichubsync";
+const UPDATE_CHECK: Duration = Duration::from_secs(6 * 60 * 60);
 
 #[derive(Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -76,6 +78,15 @@ struct Status {
     busy: usize,
     problems: Vec<ProblemInfo>,
     projects: Vec<ProjectInfo>,
+    update: Option<UpdateInfo>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateInfo {
+    version: String,
+    installing: bool,
+    error: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -94,6 +105,8 @@ struct Shared {
     config: Mutex<Config>,
     status: Mutex<Status>,
     kick: Mutex<Sender<()>>,
+    // A newer release, waiting for the user to install it
+    update: Mutex<Option<Update>>,
 }
 
 fn now() -> u64 {
@@ -247,6 +260,23 @@ fn notify(app: &AppHandle, uploaded: &[String], downloaded: &[String]) {
         [] => {}
         [one] => show("Neu in deinem Ordner".into(), name(one)),
         many => show("Neu in deinem Ordner".into(), format!("{} Dateien", many.len())),
+    }
+}
+
+// Looks for a newer release now and then; installing waits for the user, so a running bounce upload isn't cut off
+fn update_loop(app: AppHandle) {
+    thread::sleep(Duration::from_secs(10));
+    loop {
+        let found = app.updater().map_err(|e| e.to_string()).and_then(|u| tauri::async_runtime::block_on(u.check()).map_err(|e| e.to_string()));
+        if let Ok(Some(update)) = found {
+            let version = update.version.clone();
+            let new = app.state::<Shared>().update.lock().unwrap().replace(update).is_none_or(|old| old.version != version);
+            if new {
+                let _ = app.notification().builder().title("Update").body(format!("Music Hub Sync {version} ist da, installieren über das Music-Hub-Symbol")).show();
+                set_status(&app, |st| st.update = Some(UpdateInfo { version, installing: false, error: None }));
+            }
+        }
+        thread::sleep(UPDATE_CHECK);
     }
 }
 
@@ -419,6 +449,17 @@ fn logout(app: AppHandle, shared: State<Shared>) {
     kick(&shared);
 }
 
+// Downloads and installs the waiting release, then starts the new version
+#[tauri::command]
+fn install_update(app: AppHandle, shared: State<Shared>) {
+    let Some(update) = shared.update.lock().unwrap().clone() else { return };
+    set_status(&app, |st| st.update = Some(UpdateInfo { version: update.version.clone(), installing: true, error: None }));
+    thread::spawn(move || match tauri::async_runtime::block_on(update.download_and_install(|_, _| {}, || {})) {
+        Ok(()) => app.restart(),
+        Err(e) => set_status(&app, |st| st.update = Some(UpdateInfo { version: update.version.clone(), installing: false, error: Some(e.to_string()) })),
+    });
+}
+
 #[tauri::command]
 fn quit(app: AppHandle) {
     app.exit(0);
@@ -449,6 +490,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             status,
             login_start,
@@ -461,6 +503,7 @@ pub fn run() {
             open_folder,
             open_hub,
             logout,
+            install_update,
             quit
         ])
         .setup(move |app| {
@@ -474,7 +517,7 @@ pub fn run() {
                 let _ = old.delete_credential();
             }
             let first_run = !config.ready || token(&config.server()).is_none();
-            app.manage(Shared { config: Mutex::new(config), status: Mutex::new(Status::default()), kick: Mutex::new(kick_tx) });
+            app.manage(Shared { config: Mutex::new(config), status: Mutex::new(Status::default()), kick: Mutex::new(kick_tx), update: Mutex::new(None) });
 
             // A template icon follows the menu bar's colours on macOS; elsewhere the light wave suits dark panels
             let icon = if cfg!(target_os = "macos") {
@@ -519,7 +562,9 @@ pub fn run() {
             }
 
             let rx = kicks.lock().unwrap().take().expect("receiver");
+            let updates = handle.clone();
             thread::spawn(move || sync_loop(handle, rx));
+            thread::spawn(move || update_loop(updates));
             Ok(())
         })
         .run(tauri::generate_context!())

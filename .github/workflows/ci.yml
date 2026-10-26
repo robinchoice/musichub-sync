@@ -14,6 +14,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p musichub-sync-core
+      # The updater compares the app's version with the release's, so a tag has to match Cargo.toml
+      - name: Tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: test "$GITHUB_REF_NAME" = "v$(sed -n 's/^version = "\(.*\)"/\1/p' app/src-tauri/Cargo.toml)"
 
   app:
     needs: core
@@ -24,14 +28,16 @@ jobs:
           - os: macos-latest
             args: --target universal-apple-darwin --bundles dmg
             targets: aarch64-apple-darwin,x86_64-apple-darwin
-            out: target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            out: |
+              target/universal-apple-darwin/release/bundle/dmg/*.dmg
+              target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz*
           - os: windows-latest
             args: --bundles msi
-            out: target/release/bundle/msi/*.msi
+            out: target/release/bundle/msi/*.msi*
           - os: ubuntu-22.04
             args: --bundles appimage,deb
             out: |
-              target/release/bundle/appimage/*.AppImage
+              target/release/bundle/appimage/*.AppImage*
               target/release/bundle/deb/*.deb
     runs-on: ${{ matrix.os }}
     steps:
@@ -75,8 +81,16 @@ jobs:
             echo "APPLE_API_KEY=${{ vars.ASC_KEY_ID }}"
             echo "APPLE_API_ISSUER=${{ vars.ASC_ISSUER_ID }}"
           } >> "$GITHUB_ENV"
-      - run: bunx tauri build ${{ matrix.args }}
+      # Update bundles are signed with the updater key, which pull requests from forks don't get
+      - name: Build
         working-directory: app
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then updater=(--config '{"bundle":{"createUpdaterArtifacts":true}}'); fi
+          bunx tauri build ${{ matrix.args }} "${updater[@]}"
       - name: Check signature and notarization
         if: runner.os == 'macOS' && github.event_name != 'pull_request'
         run: |
@@ -108,10 +122,22 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      # Not a GitHub prerelease: installed apps look for updates under releases/latest, which skips prereleases
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          mkdir release
+          find artifacts -type f -exec sh -c 'cp "$1" "release/$(basename "$1" | tr " " "-")"' _ {} \;
           git tag -l --format='%(contents:body)' "$GITHUB_REF_NAME" > notes.md
           if [ -s notes.md ]; then notes=(--notes-file notes.md); else notes=(--generate-notes); fi
-          gh release create "$GITHUB_REF_NAME" artifacts/* --title "Music Hub Sync $GITHUB_REF_NAME" --prerelease "${notes[@]}"
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+          bundle() {
+            file=$(ls release/*"$1")
+            jq -n --arg url "$base/$(basename "$file")" --rawfile sig "$file.sig" '{url: $url, signature: ($sig | rtrimstr("\n"))}'
+          }
+          jq -n --arg version "${GITHUB_REF_NAME#v}" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --rawfile notes notes.md \
+            --argjson mac "$(bundle .app.tar.gz)" --argjson windows "$(bundle .msi)" --argjson linux "$(bundle .AppImage)" \
+            '{version: $version, notes: $notes, pub_date: $date,
+              platforms: {"darwin-aarch64": $mac, "darwin-x86_64": $mac, "windows-x86_64": $windows, "linux-x86_64": $linux}}' > release/latest.json
+          gh release create "$GITHUB_REF_NAME" release/* --title "Music Hub Sync $GITHUB_REF_NAME" "${notes[@]}"

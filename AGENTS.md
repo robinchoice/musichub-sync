@@ -16,7 +16,8 @@ The Tauri shell (`app/src-tauri`) only compiles in CI or where webkit2gtk is ins
 ## Deploy
 
 - A push to `main` runs `ci.yml`: core tests, then the app for macOS (universal dmg), Windows (msi) and Linux (AppImage, deb) as artifacts. Verify: `gh run watch`.
-- A tag `v*` also creates a GitHub prerelease with these files. Releases only on Robin's go; the tag message body becomes the release notes (German).
+- A tag `v*` also creates a GitHub release with these files and `latest.json`. Releases only on Robin's go; the tag message body becomes the release notes (German). The tag has to match `version` in `app/src-tauri/Cargo.toml` (the only version; CI checks it): bump it, commit, then tag.
+- Updates: the app checks `releases/latest/download/latest.json` 10 s after start and every 6 h, the popover offers the install. Releases are therefore no GitHub prereleases (`latest` skips them). Update bundles are signed with the updater key (secrets `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, copies `TAURI_MUSICHUBSYNC_UPDATER_*` in `~/.secrets`); its public key is in `tauri.conf.json`. Losing the key means installed apps take no more updates.
 - macOS builds are signed with the Developer ID certificate of team T2F442364K and notarized with the App Store Connect key (secrets `MAC_CERTIFICATE`, `MAC_CERTIFICATE_PASSWORD`, `ASC_KEY_P8`, variables `ASC_KEY_ID`, `ASC_ISSUER_ID`; copies from `~/.secrets`, see infra.md). The CI checks signature and notarization. Windows builds stay unsigned for now (SmartScreen warns); after the first release apply to SignPath Foundation (free for OSS, Robin applies himself).
 
 ## Pitfalls

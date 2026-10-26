@@ -75,6 +75,17 @@
   {/if}
 </section>
 
+{#if status.update}
+  <section class="status">
+    <span class="pill" style="background: var(--accent)"></span>
+    <div class="grow">
+      <b>Version {status.update.version} ist da</b>
+      <div class="muted small">{status.update.error ?? (status.update.installing ? 'Wird geladen und installiert …' : 'Danach startet die App neu')}</div>
+    </div>
+    <button class="act" disabled={status.update.installing} onclick={() => invoke('install_update')}>Installieren</button>
+  </section>
+{/if}
+
 {#if status.problems.length}
   <div class="sec">Braucht dich</div>
   <ul class="feed">
