@@ -92,13 +92,17 @@ pub fn label_of(version: &Version) -> String {
     }
 }
 
+fn audio_extension(file_name: &str) -> String {
+    extension(file_name).filter(|ext| AUDIO_EXTENSIONS.contains(&ext.as_str())).unwrap_or_else(|| "wav".into())
+}
+
 pub fn version_file(version: &Version) -> String {
-    let ext = extension(&version.original_file_name).filter(|ext| AUDIO_EXTENSIONS.contains(&ext.as_str())).unwrap_or_else(|| "wav".into());
+    let ext = audio_extension(&version.original_file_name);
     format!("v{} {}.{}", version.version_number, safe_name(&label_of(version)), ext)
 }
 
 pub fn stem_file(stem: &Stem) -> String {
-    let ext = extension(&stem.original_file_name).filter(|ext| AUDIO_EXTENSIONS.contains(&ext.as_str())).unwrap_or_else(|| "wav".into());
+    let ext = audio_extension(&stem.original_file_name);
     format!("{}.{}", safe_name(&stem.name), ext)
 }
 

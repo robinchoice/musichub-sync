@@ -6,7 +6,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use crate::hub::{Error, Hub, Result};
-use crate::layout::{aside_path, file_of, folder_of, safe_name, stem_file, stem_name, version_file, STEMS, VERSIONS};
+use crate::layout::{aside_path, file_of, safe_name, stem_file, stem_name, version_file, STEMS, VERSIONS};
 use crate::plan::{plan, Action, IndexEntry, Kind, ProjectRef, SkipReason, TrackRef};
 use crate::{index, remote, scan};
 
@@ -193,11 +193,9 @@ impl<H: Hub> Run<'_, H> {
     }
 
     fn download(&mut self, path: &str, kind: Kind, remote_id: &str) -> Result<()> {
-        let dir = folder_of(path);
         let target = self.abs(path)?;
-        fs::create_dir_all(self.abs(dir)?)?;
-        let name = file_of(path);
-        let part = self.abs(&format!("{dir}/.musichub-{name}.part"))?;
+        fs::create_dir_all(target.parent().unwrap())?;
+        let part = target.with_file_name(format!(".musichub-{}.part", file_of(path)));
         if let Err(e) = self.hub.download(kind, remote_id, &part) {
             let _ = fs::remove_file(&part);
             return Err(e);
@@ -270,8 +268,9 @@ impl<H: Hub> Run<'_, H> {
             }
             Action::UploadVersion { path, track, label, parent_version_id } => {
                 let track_id = self.track(&track)?;
-                let sha = self.sha_of(&path)?;
-                let version = self.hub.upload_version(&track_id, &self.abs(&path)?, label.as_deref(), parent_version_id.as_deref(), &sha)?;
+                let file = self.abs(&path)?;
+                let sha = scan::sha256(&file)?;
+                let version = self.hub.upload_version(&track_id, &file, label.as_deref(), parent_version_id.as_deref(), &sha)?;
                 let to = format!("{}/{VERSIONS}/{}", Self::track_dir(&path), version_file(&version));
                 // Saved over an existing version: the old one comes down again in the next round
                 let target = if !self.abs(&to)?.exists() || to == path { to } else { path.clone() };
@@ -283,8 +282,9 @@ impl<H: Hub> Run<'_, H> {
             }
             Action::UploadStem { path, track, name } => {
                 let track_id = self.track(&track)?;
-                let sha = self.sha_of(&path)?;
-                let stem = self.hub.upload_stem(&track_id, &self.abs(&path)?, &name, &sha)?;
+                let file = self.abs(&path)?;
+                let sha = scan::sha256(&file)?;
+                let stem = self.hub.upload_stem(&track_id, &file, &name, &sha)?;
                 let to = format!("{}/{STEMS}/{}", Self::track_dir(&path), stem_file(&stem));
                 let target = if !self.abs(&to)?.exists() || to == path { to } else { path.clone() };
                 self.rename(&path, &target)?;

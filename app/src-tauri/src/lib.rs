@@ -267,8 +267,7 @@ fn notify(app: &AppHandle, uploaded: &[String], downloaded: &[String]) {
 fn update_loop(app: AppHandle) {
     thread::sleep(Duration::from_secs(10));
     loop {
-        let found = app.updater().map_err(|e| e.to_string()).and_then(|u| tauri::async_runtime::block_on(u.check()).map_err(|e| e.to_string()));
-        if let Ok(Some(update)) = found {
+        if let Some(update) = app.updater().ok().and_then(|u| tauri::async_runtime::block_on(u.check()).ok().flatten()) {
             let version = update.version.clone();
             let new = app.state::<Shared>().update.lock().unwrap().replace(update).is_none_or(|old| old.version != version);
             if new {
