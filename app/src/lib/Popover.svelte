@@ -77,7 +77,7 @@
 
 {#if status.update}
   <section class="status">
-    <span class="pill" style="background: var(--accent)"></span>
+    <span class="pill" style="background: var(--needs)"></span>
     <div class="grow">
       <b>Version {status.update.version} ist da</b>
       <div class="muted small">{status.update.error ?? (status.update.installing ? 'Wird geladen und installiert …' : 'Danach startet die App neu')}</div>
