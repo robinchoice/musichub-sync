@@ -188,10 +188,6 @@ impl<H: Hub> Run<'_, H> {
         self.remote.projects.iter().flat_map(|p| &p.tracks).find(|t| t.stems.iter().any(|s| s.id == stem_id)).map(|t| t.id.clone())
     }
 
-    fn sha_of(&self, path: &str) -> Result<String> {
-        Ok(scan::sha256(&self.abs(path)?)?)
-    }
-
     fn download(&mut self, path: &str, kind: Kind, remote_id: &str) -> Result<()> {
         let target = self.abs(path)?;
         fs::create_dir_all(target.parent().unwrap())?;
@@ -200,10 +196,10 @@ impl<H: Hub> Run<'_, H> {
             let _ = fs::remove_file(&part);
             return Err(e);
         }
-        fs::rename(&part, target)?;
+        fs::rename(&part, &target)?;
         let sha = match self.remote_sha(remote_id) {
             Some(sha) => sha,
-            None => self.sha_of(path)?,
+            None => scan::sha256(&target)?,
         };
         self.remember(path, kind, remote_id, Some(sha))?;
         self.report.downloaded.push(path.into());
@@ -254,7 +250,7 @@ impl<H: Hub> Run<'_, H> {
         match action {
             Action::Download { path, kind, remote_id } => self.download(&path, kind, &remote_id),
             Action::Remember { path, kind, remote_id } => {
-                let sha = self.sha_of(&path)?;
+                let sha = scan::sha256(&self.abs(&path)?)?;
                 self.remember(&path, kind, &remote_id, Some(sha))
             }
             Action::MoveLocal { from, to } => {
@@ -295,8 +291,9 @@ impl<H: Hub> Run<'_, H> {
             }
             Action::ReplaceStem { path, stem_id } => {
                 let track_id = self.track_of_stem(&stem_id).unwrap_or_default();
-                let sha = self.sha_of(&path)?;
-                match self.hub.replace_stem(&track_id, &stem_id, &self.abs(&path)?, &sha) {
+                let file = self.abs(&path)?;
+                let sha = scan::sha256(&file)?;
+                match self.hub.replace_stem(&track_id, &stem_id, &file, &sha) {
                     Ok(_) => {
                         self.remember(&path, Kind::Stem, &stem_id, Some(sha))?;
                         self.report.uploaded.push(path);
