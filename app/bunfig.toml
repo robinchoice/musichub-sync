@@ -1,0 +1,4 @@
+# Supply-chain cooldown: ignore npm releases younger than 3 days (in seconds).
+# Hijacked packages are usually caught and pulled within hours.
+[install]
+minimumReleaseAge = 259200
