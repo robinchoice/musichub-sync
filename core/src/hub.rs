@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::fs::File;
-use std::io;
+use std::io::{self, Read};
 use std::path::Path;
 use std::time::Duration;
 
@@ -53,12 +53,13 @@ pub trait Hub {
     fn origin(&self) -> String;
     // None when nothing changed since the last call
     fn state(&self) -> Result<Option<remote::State>>;
-    fn download(&self, kind: Kind, id: &str, to: &Path) -> Result<()>;
+    // Transfers report the bytes moved so far to `progress`
+    fn download(&self, kind: Kind, id: &str, to: &Path, progress: &dyn Fn(u64)) -> Result<()>;
     fn create_project(&self, name: &str) -> Result<String>;
     fn create_track(&self, project_id: &str, name: &str) -> Result<String>;
-    fn upload_version(&self, track_id: &str, file: &Path, label: Option<&str>, parent_id: Option<&str>, sha256: &str) -> Result<remote::Version>;
-    fn upload_stem(&self, track_id: &str, file: &Path, name: &str, sha256: &str) -> Result<remote::Stem>;
-    fn replace_stem(&self, track_id: &str, stem_id: &str, file: &Path, sha256: &str) -> Result<remote::Stem>;
+    fn upload_version(&self, track_id: &str, file: &Path, label: Option<&str>, parent_id: Option<&str>, sha256: &str, progress: &dyn Fn(u64)) -> Result<remote::Version>;
+    fn upload_stem(&self, track_id: &str, file: &Path, name: &str, sha256: &str, progress: &dyn Fn(u64)) -> Result<remote::Stem>;
+    fn replace_stem(&self, track_id: &str, stem_id: &str, file: &Path, sha256: &str, progress: &dyn Fn(u64)) -> Result<remote::Stem>;
     fn relabel(&self, version_id: &str, label: Option<&str>) -> Result<()>;
     fn trash(&self, kind: Kind, id: &str) -> Result<()>;
 }
@@ -71,6 +72,26 @@ pub fn mime_of(file_name: &str) -> &'static str {
         Some("aiff" | "aif" | "aifc") => "audio/aiff",
         _ => "audio/wav",
     }
+}
+
+// Passes reads through and tells `progress` how many bytes went by so far
+struct Counting<'a, R> {
+    inner: R,
+    done: u64,
+    progress: &'a dyn Fn(u64),
+}
+
+impl<R: Read> Read for Counting<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.done += n as u64;
+        (self.progress)(self.done);
+        Ok(n)
+    }
+}
+
+fn counting<R: Read>(inner: R, progress: &dyn Fn(u64)) -> Counting<'_, R> {
+    Counting { inner, done: 0, progress }
 }
 
 fn file_name(path: &Path) -> String {
@@ -133,14 +154,14 @@ impl HttpHub {
     }
 
     // Straight to S3 with the presigned URL; size and type are part of the signature
-    fn put_file(&self, upload: &UploadUrl, file: &Path) -> Result<()> {
+    fn put_file(&self, upload: &UploadUrl, file: &Path, progress: &dyn Fn(u64)) -> Result<()> {
         let size = file.metadata()?.len();
         let response = self
             .agent
             .put(&upload.upload_url)
             .set("Content-Type", mime_of(&file_name(file)))
             .set("Content-Length", &size.to_string())
-            .send(File::open(file)?);
+            .send(counting(File::open(file)?, progress));
         checked(response).map(|_| ())
     }
 
@@ -211,7 +232,7 @@ impl Hub for HttpHub {
         Ok(Some(state))
     }
 
-    fn download(&self, kind: Kind, id: &str, to: &Path) -> Result<()> {
+    fn download(&self, kind: Kind, id: &str, to: &Path, progress: &dyn Fn(u64)) -> Result<()> {
         let path = match kind {
             Kind::Version => format!("/versions/{id}/download-url"),
             Kind::Stem => format!("/stems/{id}/download-url"),
@@ -219,7 +240,7 @@ impl Hub for HttpHub {
         let url: Url = parse(self.get(&path)?)?;
         let response = checked(self.agent.get(&url.url).call())?;
         let mut out = File::create(to)?;
-        io::copy(&mut response.into_reader(), &mut out)?;
+        io::copy(&mut counting(response.into_reader(), progress), &mut out)?;
         out.sync_all()?;
         Ok(())
     }
@@ -234,9 +255,9 @@ impl Hub for HttpHub {
         Ok(track.id)
     }
 
-    fn upload_version(&self, track_id: &str, file: &Path, label: Option<&str>, parent_id: Option<&str>, sha256: &str) -> Result<remote::Version> {
+    fn upload_version(&self, track_id: &str, file: &Path, label: Option<&str>, parent_id: Option<&str>, sha256: &str, progress: &dyn Fn(u64)) -> Result<remote::Version> {
         let upload = self.upload_url(&format!("/versions/track/{track_id}/upload-url"), file)?;
-        self.put_file(&upload, file)?;
+        self.put_file(&upload, file, progress)?;
         let name = file_name(file);
         let mut body = json!({
             "fileKey": upload.file_key,
@@ -254,9 +275,9 @@ impl Hub for HttpHub {
         field(self.send_json("POST", &format!("/versions/track/{track_id}"), body)?, "version")
     }
 
-    fn upload_stem(&self, track_id: &str, file: &Path, name: &str, sha256: &str) -> Result<remote::Stem> {
+    fn upload_stem(&self, track_id: &str, file: &Path, name: &str, sha256: &str, progress: &dyn Fn(u64)) -> Result<remote::Stem> {
         let upload = self.upload_url(&format!("/stems/track/{track_id}/upload-url"), file)?;
-        self.put_file(&upload, file)?;
+        self.put_file(&upload, file, progress)?;
         let file_name = file_name(file);
         let body = json!({
             "fileKey": upload.file_key,
@@ -269,9 +290,9 @@ impl Hub for HttpHub {
         field(self.send_json("POST", &format!("/stems/track/{track_id}"), body)?, "stem")
     }
 
-    fn replace_stem(&self, track_id: &str, stem_id: &str, file: &Path, sha256: &str) -> Result<remote::Stem> {
+    fn replace_stem(&self, track_id: &str, stem_id: &str, file: &Path, sha256: &str, progress: &dyn Fn(u64)) -> Result<remote::Stem> {
         let upload = self.upload_url(&format!("/stems/track/{track_id}/upload-url"), file)?;
-        self.put_file(&upload, file)?;
+        self.put_file(&upload, file, progress)?;
         let name = file_name(file);
         let body = json!({ "fileKey": upload.file_key, "originalFileName": name, "mimeType": mime_of(&name), "sha256": sha256 });
         field(self.send_json("POST", &format!("/stems/{stem_id}/replace"), body)?, "stem")

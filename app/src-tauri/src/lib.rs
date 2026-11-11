@@ -1,18 +1,19 @@
 // Tray app: the sync runs in a background thread, the popover reads its status and starts actions.
 // The session token stays in the system keychain and on the Rust side; the popover never sees it.
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use musichub_sync_core::hub::{Error, HttpHub};
 use musichub_sync_core::layout::file_of;
 use musichub_sync_core::login;
 use musichub_sync_core::plan::SkipReason;
 use musichub_sync_core::remote;
-use musichub_sync_core::run::{Problem, Syncer};
+use musichub_sync_core::run::{Problem, Progress, Syncer};
 use serde::{Deserialize, Serialize};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
@@ -27,6 +28,8 @@ const DEFAULT_SERVER: &str = "https://hub.pleasance.org";
 const ROUND: Duration = Duration::from_secs(20);
 const KEYRING_SERVICE: &str = "org.pleasance.musichubsync";
 const UPDATE_CHECK: Duration = Duration::from_secs(6 * 60 * 60);
+// A few updates a second are enough for the progress bar
+const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -76,6 +79,8 @@ struct Status {
     message: Option<String>,
     last_sync: Option<u64>,
     busy: usize,
+    // The up- or download under way
+    transfer: Option<TransferInfo>,
     problems: Vec<ProblemInfo>,
     projects: Vec<ProjectInfo>,
     update: Option<UpdateInfo>,
@@ -87,6 +92,24 @@ struct UpdateInfo {
     version: String,
     installing: bool,
     error: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TransferInfo {
+    name: String,
+    upload: bool,
+    done: u64,
+    // 0 when the size isn't known
+    total: u64,
+    file: usize,
+    files: usize,
+}
+
+impl From<&Progress> for TransferInfo {
+    fn from(p: &Progress) -> Self {
+        TransferInfo { name: file_of(&p.path).to_string(), upload: p.upload, done: p.done, total: p.total, file: p.file, files: p.files }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -161,7 +184,15 @@ fn update_tray(app: &AppHandle, status: &Status) {
     if let Some(tray) = app.tray_by_id("main") {
         let tooltip = match status.state.as_str() {
             "synced" => "Music Hub: alles synchron".to_string(),
-            "syncing" => "Music Hub: gleicht ab …".to_string(),
+            "syncing" => match &status.transfer {
+                Some(t) => {
+                    let what = if t.upload { "lädt hoch" } else { "lädt herunter" };
+                    let percent = if t.total > 0 { format!(" {} %", (t.done * 100 / t.total).min(100)) } else { String::new() };
+                    let count = if t.files > 1 { format!(" ({} von {})", t.file, t.files) } else { String::new() };
+                    format!("Music Hub: {what}{percent}{count}")
+                }
+                None => "Music Hub: gleicht ab …".to_string(),
+            },
             "paused" => "Music Hub: pausiert".to_string(),
             "login" | "setup" => "Music Hub: einrichten".to_string(),
             _ => format!("Music Hub: {}", status.message.clone().unwrap_or_default()),
@@ -195,7 +226,22 @@ fn sync_loop(app: AppHandle, kicks: Receiver<()>) {
                 set_status(&app, |st| st.state = "syncing".into());
                 // Any setting changed in the popover (pause, folder, projects, logout) ends the round after the current
                 // action; its kick starts the next one right away with the new settings
-                let result = s.run(&config.excluded, now(), || *app.state::<Shared>().config.lock().unwrap() != config);
+                let last_progress = Cell::new(None::<Instant>);
+                let result = s.run(
+                    &config.excluded,
+                    now(),
+                    || *app.state::<Shared>().config.lock().unwrap() != config,
+                    |p| {
+                        // Every new file shows right away, its bytes a few times a second
+                        if p.done > 0 && last_progress.get().is_some_and(|t| t.elapsed() < PROGRESS_EVERY) {
+                            return;
+                        }
+                        last_progress.set(Some(Instant::now()));
+                        set_status(&app, |st| st.transfer = Some(p.into()));
+                    },
+                );
+                // Each outcome below sends the status on; the round's transfers are over
+                app.state::<Shared>().status.lock().unwrap().transfer = None;
                 let projects = s
                     .state()
                     .map(|state| state.projects.iter().map(Into::into).collect())

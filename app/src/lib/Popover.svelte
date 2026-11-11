@@ -28,6 +28,8 @@
   const status = $derived(info.status);
   const synced = $derived(status.projects.filter((p) => !info.excluded.includes(p.id)));
   const bytes = $derived(synced.reduce((sum, p) => sum + p.bytes, 0));
+  const transfer = $derived(status.transfer);
+  const percent = $derived(transfer?.total ? Math.min(100, Math.floor((transfer.done / transfer.total) * 100)) : null);
 
   function who(e) {
     return e.user?.name ?? e.guestName ?? 'Jemand';
@@ -57,7 +59,17 @@
 </header>
 
 <section class="status">
-  {#if status.state === 'syncing'}
+  {#if status.state === 'syncing' && transfer}
+    <div class="spin"></div>
+    <div class="grow progress">
+      <b>{transfer.upload ? 'Lädt hoch' : 'Lädt herunter'}{transfer.files > 1 ? ` · ${transfer.file} von ${transfer.files}` : ''}</b>
+      <div class="muted small name" title={transfer.name}>{transfer.name}</div>
+      {#if percent !== null}
+        <div class="bar"><span style="width: {percent}%"></span></div>
+        <div class="muted small">{percent} % von {size(transfer.total)}</div>
+      {/if}
+    </div>
+  {:else if status.state === 'syncing'}
     <div class="spin"></div>
     <div><b>Gleicht ab …</b><div class="muted small">{status.busy ? `${status.busy} Datei${status.busy === 1 ? '' : 'en'} wird noch geschrieben` : 'Lädt hoch und herunter'}</div></div>
   {:else if status.state === 'paused'}
@@ -163,6 +175,27 @@
     display: flex;
     gap: 10px;
     align-items: center;
+  }
+  .progress {
+    min-width: 0;
+  }
+  .name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .bar {
+    height: 4px;
+    margin: 6px 0 4px;
+    border-radius: 2px;
+    background: var(--line);
+    overflow: hidden;
+  }
+  .bar span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.25s linear;
   }
   .pill {
     width: 9px;

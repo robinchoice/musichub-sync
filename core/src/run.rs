@@ -26,6 +26,19 @@ pub struct Report {
     pub skipped: Vec<(String, SkipReason)>,
 }
 
+// Where the transfer under way stands, for a progress bar
+#[derive(Debug, Clone, PartialEq)]
+pub struct Progress {
+    pub path: String,
+    pub upload: bool,
+    pub done: u64,
+    // 0 when the size isn't known
+    pub total: u64,
+    // Its place among the round's transfers, counted from 1
+    pub file: usize,
+    pub files: usize,
+}
+
 pub struct Syncer<H: Hub> {
     pub hub: H,
     root: PathBuf,
@@ -53,8 +66,9 @@ impl<H: Hub> Syncer<H> {
     }
 
     // Projects in `excluded` stay out: neither their files nor the hub's are touched.
-    // `stop` is asked before every action; once it says yes the round ends there, like after a lost connection
-    pub fn run(&mut self, excluded: &[String], now: u64, stop: impl Fn() -> bool) -> Result<Report> {
+    // `stop` is asked before every action; once it says yes the round ends there, like after a lost connection.
+    // `progress` hears about every up- and download while it runs
+    pub fn run(&mut self, excluded: &[String], now: u64, stop: impl Fn() -> bool, progress: impl Fn(&Progress)) -> Result<Report> {
         if let Some(state) = self.hub.state()? {
             self.state = Some(state);
         }
@@ -73,13 +87,26 @@ impl<H: Hub> Syncer<H> {
         entries.retain(|e| !outside(&e.path));
         let disk: Vec<_> = scan::scan(&self.root, &entries, now)?.into_iter().filter(|d| !outside(&d.path)).collect();
 
-        let mut run = Run { hub: &self.hub, root: &self.root, remote: &remote, entries, report: Report::default(), projects: HashMap::new(), tracks: HashMap::new() };
+        let actions = plan(&remote, &entries, &disk, now);
+        let files = actions.iter().filter(|a| is_transfer(a)).count();
+        let mut run = Run {
+            hub: &self.hub,
+            root: &self.root,
+            remote: &remote,
+            entries,
+            report: Report::default(),
+            projects: HashMap::new(),
+            tracks: HashMap::new(),
+            progress: &progress,
+            file: 0,
+            files,
+        };
         run.report.skipped.extend(shadowed.iter().map(|p| (safe_name(&p.name), SkipReason::Collision)));
         // Written after every action: a crash mid-round must not leave an index that calls a renamed file deleted
         let origin = self.hub.origin();
         let save = |entries: &[IndexEntry]| index::save(&self.index_file, &origin, &self.account, &self.root, &[entries, &kept].concat());
         let mut result = Ok(());
-        for action in plan(&remote, &run.entries, &disk, now) {
+        for action in actions {
             if stop() {
                 break;
             }
@@ -101,6 +128,10 @@ impl<H: Hub> Syncer<H> {
         save(&run.entries)?;
         result.map(|()| run.report)
     }
+}
+
+fn is_transfer(action: &Action) -> bool {
+    matches!(action, Action::Download { .. } | Action::UploadVersion { .. } | Action::UploadStem { .. } | Action::ReplaceStem { .. } | Action::KeepAside { .. })
 }
 
 fn action_path(action: &Action) -> &str {
@@ -127,6 +158,10 @@ struct Run<'a, H: Hub> {
     // Created during this round, by name
     projects: HashMap<String, String>,
     tracks: HashMap<(String, String), String>,
+    progress: &'a dyn Fn(&Progress),
+    // The transfer under way and how many the round has
+    file: usize,
+    files: usize,
 }
 
 fn checked_path(root: &Path, path: &str) -> Result<PathBuf> {
@@ -178,10 +213,31 @@ impl<H: Hub> Run<'_, H> {
         self.rename(from, to)
     }
 
-    fn remote_sha(&self, id: &str) -> Option<String> {
+    // Hash and size of a version or stem in the hub
+    fn remote_file(&self, id: &str) -> Option<(Option<String>, u64)> {
         self.remote.projects.iter().flat_map(|p| &p.tracks).find_map(|t| {
-            t.versions.iter().find(|v| v.id == id).map(|v| v.sha256.clone()).or_else(|| t.stems.iter().find(|s| s.id == id).map(|s| s.sha256.clone()))
-        })?
+            t.versions
+                .iter()
+                .find(|v| v.id == id)
+                .map(|v| (v.sha256.clone(), v.file_size))
+                .or_else(|| t.stems.iter().find(|s| s.id == id).map(|s| (s.sha256.clone(), s.file_size)))
+        })
+    }
+
+    // Tells `progress` where the transfer of `path` stands
+    fn progress_of(&self, path: &str, upload: bool, total: u64) -> impl Fn(u64) + '_ {
+        let path = path.to_string();
+        move |done| (self.progress)(&Progress { path: path.clone(), upload, done, total, file: self.file, files: self.files })
+    }
+
+    // Hashes a file and sends it with `send`; the transfer shows up before hashing a large file takes its time
+    fn upload<T>(&self, path: &str, send: impl FnOnce(&H, &Path, &str, &dyn Fn(u64)) -> Result<T>) -> Result<(T, String)> {
+        let file = self.abs(path)?;
+        let progress = self.progress_of(path, true, fs::metadata(&file)?.len());
+        progress(0);
+        let sha = scan::sha256(&file)?;
+        let sent = send(self.hub, &file, &sha, &progress)?;
+        Ok((sent, sha))
     }
 
     fn track_of_stem(&self, stem_id: &str) -> Option<String> {
@@ -192,12 +248,18 @@ impl<H: Hub> Run<'_, H> {
         let target = self.abs(path)?;
         fs::create_dir_all(target.parent().unwrap())?;
         let part = target.with_file_name(format!(".musichub-{}.part", file_of(path)));
-        if let Err(e) = self.hub.download(kind, remote_id, &part) {
+        let (sha, size) = self.remote_file(remote_id).unwrap_or_default();
+        let downloaded = {
+            let progress = self.progress_of(path, false, size);
+            progress(0);
+            self.hub.download(kind, remote_id, &part, &progress)
+        };
+        if let Err(e) = downloaded {
             let _ = fs::remove_file(&part);
             return Err(e);
         }
         fs::rename(&part, &target)?;
-        let sha = match self.remote_sha(remote_id) {
+        let sha = match sha {
             Some(sha) => sha,
             None => scan::sha256(&target)?,
         };
@@ -247,6 +309,9 @@ impl<H: Hub> Run<'_, H> {
     }
 
     fn apply(&mut self, action: Action) -> Result<()> {
+        if is_transfer(&action) {
+            self.file += 1;
+        }
         match action {
             Action::Download { path, kind, remote_id } => self.download(&path, kind, &remote_id),
             Action::Remember { path, kind, remote_id } => {
@@ -264,9 +329,8 @@ impl<H: Hub> Run<'_, H> {
             }
             Action::UploadVersion { path, track, label, parent_version_id } => {
                 let track_id = self.track(&track)?;
-                let file = self.abs(&path)?;
-                let sha = scan::sha256(&file)?;
-                let version = self.hub.upload_version(&track_id, &file, label.as_deref(), parent_version_id.as_deref(), &sha)?;
+                let (version, sha) =
+                    self.upload(&path, |hub, file, sha, progress| hub.upload_version(&track_id, file, label.as_deref(), parent_version_id.as_deref(), sha, progress))?;
                 let to = format!("{}/{VERSIONS}/{}", Self::track_dir(&path), version_file(&version));
                 // Saved over an existing version: the old one comes down again in the next round
                 let target = if !self.abs(&to)?.exists() || to == path { to } else { path.clone() };
@@ -278,9 +342,7 @@ impl<H: Hub> Run<'_, H> {
             }
             Action::UploadStem { path, track, name } => {
                 let track_id = self.track(&track)?;
-                let file = self.abs(&path)?;
-                let sha = scan::sha256(&file)?;
-                let stem = self.hub.upload_stem(&track_id, &file, &name, &sha)?;
+                let (stem, sha) = self.upload(&path, |hub, file, sha, progress| hub.upload_stem(&track_id, file, &name, sha, progress))?;
                 let to = format!("{}/{STEMS}/{}", Self::track_dir(&path), stem_file(&stem));
                 let target = if !self.abs(&to)?.exists() || to == path { to } else { path.clone() };
                 self.rename(&path, &target)?;
@@ -291,10 +353,8 @@ impl<H: Hub> Run<'_, H> {
             }
             Action::ReplaceStem { path, stem_id } => {
                 let track_id = self.track_of_stem(&stem_id).unwrap_or_default();
-                let file = self.abs(&path)?;
-                let sha = scan::sha256(&file)?;
-                match self.hub.replace_stem(&track_id, &stem_id, &file, &sha) {
-                    Ok(_) => {
+                match self.upload(&path, |hub, file, sha, progress| hub.replace_stem(&track_id, &stem_id, file, sha, progress)) {
+                    Ok((_, sha)) => {
                         self.remember(&path, Kind::Stem, &stem_id, Some(sha))?;
                         self.report.uploaded.push(path);
                         Ok(())

@@ -103,12 +103,14 @@ impl Hub for FakeHub {
         Ok(Some(self.state.borrow().clone()))
     }
 
-    fn download(&self, _kind: Kind, id: &str, to: &Path) -> Result<()> {
+    fn download(&self, _kind: Kind, id: &str, to: &Path, progress: &dyn Fn(u64)) -> Result<()> {
         if *self.downloads_failing.borrow() > 0 {
             *self.downloads_failing.borrow_mut() -= 1;
             return Err(Error::Network("weg".into()));
         }
-        fs::write(to, &self.files.borrow()[id])?;
+        let bytes = &self.files.borrow()[id];
+        fs::write(to, bytes)?;
+        progress(bytes.len() as u64);
         Ok(())
     }
 
@@ -122,20 +124,22 @@ impl Hub for FakeHub {
         Ok(self.add_track(project_id, name))
     }
 
-    fn upload_version(&self, track_id: &str, file: &Path, label: Option<&str>, _parent: Option<&str>, _sha: &str) -> Result<Version> {
+    fn upload_version(&self, track_id: &str, file: &Path, label: Option<&str>, _parent: Option<&str>, _sha: &str, progress: &dyn Fn(u64)) -> Result<Version> {
         *self.uploads.borrow_mut() += 1;
         if Some(*self.uploads.borrow()) == self.crash_at_upload {
             panic!("crash");
         }
         let name = file.file_name().unwrap().to_string_lossy().into_owned();
-        Ok(self.add_version(track_id, &fs::read(file)?, label, Some(&name)))
+        let bytes = fs::read(file)?;
+        progress(bytes.len() as u64);
+        Ok(self.add_version(track_id, &bytes, label, Some(&name)))
     }
 
-    fn upload_stem(&self, track_id: &str, file: &Path, name: &str, _sha: &str) -> Result<Stem> {
+    fn upload_stem(&self, track_id: &str, file: &Path, name: &str, _sha: &str, _progress: &dyn Fn(u64)) -> Result<Stem> {
         Ok(self.add_stem(track_id, name, &fs::read(file)?))
     }
 
-    fn replace_stem(&self, track_id: &str, stem_id: &str, file: &Path, _sha: &str) -> Result<Stem> {
+    fn replace_stem(&self, track_id: &str, stem_id: &str, file: &Path, _sha: &str, _progress: &dyn Fn(u64)) -> Result<Stem> {
         if self.open_tracks.iter().any(|t| t == track_id) {
             return Err(Error::Conflict("Der Track ist offen".into()));
         }
@@ -201,7 +205,7 @@ fn setup(hub: FakeHub) -> Setup {
 
 impl Setup {
     fn round(&mut self) -> musichub_sync_core::run::Report {
-        self.syncer.run(&[], later(), || false).expect("round")
+        self.syncer.run(&[], later(), || false, |_| {}).expect("round")
     }
     fn read(&self, path: &str) -> Vec<u8> {
         fs::read(self.root.join(path)).unwrap()
@@ -297,7 +301,7 @@ fn saving_over_a_version_adds_one_and_the_old_one_comes_back() {
 fn a_stem_changed_here_and_in_the_hub_comes_down_and_the_local_one_lies_next_to_it() {
     let mut s = setup(FakeHub::new());
     s.round();
-    s.syncer.hub.replace_stem("t1", "s3", &{ let f = s._dir.path().join("hub.wav"); fs::write(&f, b"drums, hub cut").unwrap(); f }, "x").unwrap();
+    s.syncer.hub.replace_stem("t1", "s3", &{ let f = s._dir.path().join("hub.wav"); fs::write(&f, b"drums, hub cut").unwrap(); f }, "x", &|_| {}).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(1100));
     s.write(DRUMS, b"drums, my cut");
     let report = s.round();
@@ -314,11 +318,11 @@ fn a_stem_changed_here_and_in_the_hub_comes_down_and_the_local_one_lies_next_to_
 fn a_failed_download_after_moving_aside_fetches_again_instead_of_trashing() {
     let mut s = setup(FakeHub::new());
     s.round();
-    s.syncer.hub.replace_stem("t1", "s3", &{ let f = s._dir.path().join("hub.wav"); fs::write(&f, b"drums, hub cut").unwrap(); f }, "x").unwrap();
+    s.syncer.hub.replace_stem("t1", "s3", &{ let f = s._dir.path().join("hub.wav"); fs::write(&f, b"drums, hub cut").unwrap(); f }, "x", &|_| {}).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(1100));
     s.write(DRUMS, b"drums, my cut");
     *s.syncer.hub.downloads_failing.borrow_mut() = 1;
-    assert!(matches!(s.syncer.run(&[], later(), || false), Err(Error::Network(_))));
+    assert!(matches!(s.syncer.run(&[], later(), || false, |_| {}), Err(Error::Network(_))));
     assert_eq!(s.read("Tiefgang/Nachtbus/Stems/Drums (lokal).wav"), b"drums, my cut");
     s.round();
     assert_eq!(s.read(DRUMS), b"drums, hub cut");
@@ -332,7 +336,7 @@ fn a_crash_mid_round_does_not_trash_the_version_saved_over_before_it() {
     std::thread::sleep(std::time::Duration::from_millis(1100));
     s.write(V1, b"mix one, louder");
     s.write("Tiefgang/Nachtbus/Versionen/Nachtbus Final.wav", b"mix two");
-    let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.syncer.run(&[], later(), || false)));
+    let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.syncer.run(&[], later(), || false, |_| {})));
     assert!(crashed.is_err());
     // The app starts again
     let hub = std::mem::replace(&mut s.syncer, Syncer::new(FakeHub::default(), &s.root, s._dir.path(), "a@band.de")).hub;
@@ -353,7 +357,7 @@ fn a_stopped_round_ends_after_the_current_action_and_the_next_one_finishes() {
         .run(&[], later(), || {
             asked.set(asked.get() + 1);
             asked.get() > 1
-        })
+            }, |_| {})
         .unwrap();
     assert_eq!(report.downloaded.len(), 1);
     let report = s.round();
@@ -509,7 +513,7 @@ fn a_folder_synced_for_another_account_is_left_alone() {
     // B sees nothing of A's projects: with A's index it would trash them, without one upload them
     *hub.state.borrow_mut() = Default::default();
     s.syncer.hub = hub;
-    let refused = s.syncer.run(&[], later(), || false);
+    let refused = s.syncer.run(&[], later(), || false, |_| {});
     assert!(matches!(refused, Err(Error::Io(ref e)) if e.to_string().contains("a@band.de")), "{refused:?}");
     assert_eq!(s.read(V1), b"mix one");
     assert!(s.syncer.hub.state.borrow().projects.is_empty());
@@ -527,7 +531,7 @@ fn a_folder_stays_another_accounts_after_syncing_a_folder_of_ones_own() {
     s.round();
     let hub = std::mem::replace(&mut s.syncer, Syncer::new(FakeHub::default(), &s.root, &index, "b@band.de")).hub;
     s.syncer.hub = hub;
-    assert!(s.syncer.run(&[], later(), || false).is_err());
+    assert!(s.syncer.run(&[], later(), || false, |_| {}).is_err());
     assert!(s.syncer.hub.state.borrow().projects.is_empty(), "A's files went up to B");
 }
 
@@ -567,7 +571,7 @@ fn a_project_named_like_an_excluded_one_stays_out_of_its_folder() {
     hub.add_version(&t, b"twin mix", Some("Rough Mix"), None);
     let mut s = setup(hub);
     s.write(V1, b"my own file");
-    let report = s.syncer.run(&[twin], later(), || false).unwrap();
+    let report = s.syncer.run(&[twin], later(), || false, |_| {}).unwrap();
     assert_eq!(s.read(V1), b"my own file");
     assert!(report.downloaded.is_empty());
     assert!(report.skipped.contains(&("Tiefgang".into(), SkipReason::Collision)), "{report:?}");
@@ -576,10 +580,30 @@ fn a_project_named_like_an_excluded_one_stays_out_of_its_folder() {
 #[test]
 fn an_excluded_project_is_left_alone() {
     let mut s = setup(FakeHub::new());
-    s.syncer.run(&["p1".into()], later(), || false).unwrap();
+    s.syncer.run(&["p1".into()], later(), || false, |_| {}).unwrap();
     assert!(!s.exists(V1));
     s.write("Tiefgang/Notiz.wav", b"x");
-    s.syncer.run(&["p1".into()], later(), || false).unwrap();
+    s.syncer.run(&["p1".into()], later(), || false, |_| {}).unwrap();
     assert_eq!(s.syncer.hub.state.borrow().projects.len(), 1);
     assert!(s.exists("Tiefgang/Notiz.wav"));
+}
+
+#[test]
+fn every_transfer_reports_its_progress_from_zero_to_its_size() {
+    let mut s = setup(FakeHub::new());
+    let seen = RefCell::new(vec![]);
+    s.syncer.run(&[], later(), || false, |p| seen.borrow_mut().push(p.clone())).unwrap();
+    let downloads = seen.take();
+    for file in 1..=2 {
+        let steps: Vec<_> = downloads.iter().filter(|p| p.file == file).collect();
+        assert!(steps.iter().all(|p| !p.upload && p.files == 2 && p.total > 0), "{downloads:?}");
+        assert_eq!(steps.first().unwrap().done, 0);
+        assert_eq!(steps.last().unwrap().done, steps.last().unwrap().total);
+    }
+
+    s.write("Tiefgang/Nachtbus/Versionen/Nachtbus Final.wav", b"mix two");
+    s.syncer.run(&[], later(), || false, |p| seen.borrow_mut().push(p.clone())).unwrap();
+    let uploads = seen.take();
+    assert_eq!(uploads.first().map(|p| (p.path.as_str(), p.upload, p.done, p.total, p.file, p.files)), Some(("Tiefgang/Nachtbus/Versionen/Nachtbus Final.wav", true, 0, 7, 1, 1)));
+    assert_eq!(uploads.last().map(|p| p.done), Some(7));
 }
