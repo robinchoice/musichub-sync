@@ -99,8 +99,8 @@ struct UpdateInfo {
 struct TransferInfo {
     name: String,
     upload: bool,
-    done: u64,
-    // 0 when the size isn't known
+    // None when the size isn't known
+    percent: Option<u64>,
     total: u64,
     file: usize,
     files: usize,
@@ -108,7 +108,8 @@ struct TransferInfo {
 
 impl From<&Progress> for TransferInfo {
     fn from(p: &Progress) -> Self {
-        TransferInfo { name: file_of(&p.path).to_string(), upload: p.upload, done: p.done, total: p.total, file: p.file, files: p.files }
+        let percent = (p.total > 0).then(|| (p.done * 100 / p.total).min(100));
+        TransferInfo { name: file_of(&p.path).to_string(), upload: p.upload, percent, total: p.total, file: p.file, files: p.files }
     }
 }
 
@@ -187,7 +188,7 @@ fn update_tray(app: &AppHandle, status: &Status) {
             "syncing" => match &status.transfer {
                 Some(t) => {
                     let what = if t.upload { "lädt hoch" } else { "lädt herunter" };
-                    let percent = if t.total > 0 { format!(" {} %", (t.done * 100 / t.total).min(100)) } else { String::new() };
+                    let percent = t.percent.map(|p| format!(" {p} %")).unwrap_or_default();
                     let count = if t.files > 1 { format!(" ({} von {})", t.file, t.files) } else { String::new() };
                     format!("Music Hub: {what}{percent}{count}")
                 }

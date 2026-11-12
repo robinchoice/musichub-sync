@@ -29,7 +29,7 @@
   const synced = $derived(status.projects.filter((p) => !info.excluded.includes(p.id)));
   const bytes = $derived(synced.reduce((sum, p) => sum + p.bytes, 0));
   const transfer = $derived(status.transfer);
-  const percent = $derived(transfer?.total ? Math.min(100, Math.floor((transfer.done / transfer.total) * 100)) : null);
+  const percent = $derived(transfer?.percent ?? null);
 
   function who(e) {
     return e.user?.name ?? e.guestName ?? 'Jemand';
