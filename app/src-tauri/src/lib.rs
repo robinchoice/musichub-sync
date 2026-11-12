@@ -232,8 +232,8 @@ fn sync_loop(app: AppHandle, kicks: Receiver<()>) {
                     now(),
                     || *app.state::<Shared>().config.lock().unwrap() != config,
                     |p| {
-                        // Every new file shows right away, its bytes a few times a second
-                        if p.done > 0 && last_progress.get().is_some_and(|t| t.elapsed() < PROGRESS_EVERY) {
+                        // Every new file and its end show right away, its bytes in between a few times a second
+                        if p.done > 0 && p.done != p.total && last_progress.get().is_some_and(|t| t.elapsed() < PROGRESS_EVERY) {
                             return;
                         }
                         last_progress.set(Some(Instant::now()));

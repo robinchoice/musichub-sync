@@ -135,15 +135,18 @@ impl Hub for FakeHub {
         Ok(self.add_version(track_id, &bytes, label, Some(&name)))
     }
 
-    fn upload_stem(&self, track_id: &str, file: &Path, name: &str, _sha: &str, _progress: &dyn Fn(u64)) -> Result<Stem> {
-        Ok(self.add_stem(track_id, name, &fs::read(file)?))
+    fn upload_stem(&self, track_id: &str, file: &Path, name: &str, _sha: &str, progress: &dyn Fn(u64)) -> Result<Stem> {
+        let bytes = fs::read(file)?;
+        progress(bytes.len() as u64);
+        Ok(self.add_stem(track_id, name, &bytes))
     }
 
-    fn replace_stem(&self, track_id: &str, stem_id: &str, file: &Path, _sha: &str, _progress: &dyn Fn(u64)) -> Result<Stem> {
+    fn replace_stem(&self, track_id: &str, stem_id: &str, file: &Path, _sha: &str, progress: &dyn Fn(u64)) -> Result<Stem> {
         if self.open_tracks.iter().any(|t| t == track_id) {
             return Err(Error::Conflict("Der Track ist offen".into()));
         }
         let bytes = fs::read(file)?;
+        progress(bytes.len() as u64);
         self.files.borrow_mut().insert(stem_id.into(), bytes.clone());
         Ok(self.track_mut(track_id, |t| {
             let stem = t.stems.iter_mut().find(|s| s.id == stem_id).unwrap();
@@ -602,8 +605,13 @@ fn every_transfer_reports_its_progress_from_zero_to_its_size() {
     }
 
     s.write("Tiefgang/Nachtbus/Versionen/Nachtbus Final.wav", b"mix two");
+    s.write("Tiefgang/Nachtbus/Stems/Bass.wav", b"bass");
     s.syncer.run(&[], later(), || false, |p| seen.borrow_mut().push(p.clone())).unwrap();
     let uploads = seen.take();
-    assert_eq!(uploads.first().map(|p| (p.path.as_str(), p.upload, p.done, p.total, p.file, p.files)), Some(("Tiefgang/Nachtbus/Versionen/Nachtbus Final.wav", true, 0, 7, 1, 1)));
-    assert_eq!(uploads.last().map(|p| p.done), Some(7));
+    for (path, size) in [("Tiefgang/Nachtbus/Versionen/Nachtbus Final.wav", 7), ("Tiefgang/Nachtbus/Stems/Bass.wav", 4)] {
+        let steps: Vec<_> = uploads.iter().filter(|p| p.path == path).collect();
+        assert!(!steps.is_empty() && steps.iter().all(|p| p.upload && p.total == size && p.files == 2), "{uploads:?}");
+        assert_eq!(steps.first().unwrap().done, 0);
+        assert_eq!(steps.last().unwrap().done, size);
+    }
 }

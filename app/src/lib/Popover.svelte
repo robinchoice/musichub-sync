@@ -194,7 +194,7 @@
   .bar span {
     display: block;
     height: 100%;
-    background: var(--accent);
+    background: var(--grad);
     transition: width 0.25s linear;
   }
   .pill {
