@@ -29,7 +29,6 @@
   const synced = $derived(status.projects.filter((p) => !info.excluded.includes(p.id)));
   const bytes = $derived(synced.reduce((sum, p) => sum + p.bytes, 0));
   const transfer = $derived(status.transfer);
-  const percent = $derived(transfer?.percent ?? null);
 
   function who(e) {
     return e.user?.name ?? e.guestName ?? 'Jemand';
@@ -64,9 +63,9 @@
     <div class="grow progress">
       <b>{transfer.upload ? 'Lädt hoch' : 'Lädt herunter'}{transfer.files > 1 ? ` · ${transfer.file} von ${transfer.files}` : ''}</b>
       <div class="muted small name" title={transfer.name}>{transfer.name}</div>
-      {#if percent !== null}
-        <div class="bar"><span style="width: {percent}%"></span></div>
-        <div class="muted small">{percent} % von {size(transfer.total)}</div>
+      {#if transfer.percent != null}
+        <div class="bar"><span style="width: {transfer.percent}%"></span></div>
+        <div class="muted small">{transfer.percent} % von {size(transfer.total)}</div>
       {/if}
     </div>
   {:else if status.state === 'syncing'}
