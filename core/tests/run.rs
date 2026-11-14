@@ -614,4 +614,8 @@ fn every_transfer_reports_its_progress_from_zero_to_its_size() {
         assert_eq!(steps.first().unwrap().done, 0);
         assert_eq!(steps.last().unwrap().done, size);
     }
+    let mut numbers: Vec<_> = uploads.iter().map(|p| p.file).collect();
+    numbers.dedup();
+    numbers.sort();
+    assert_eq!(numbers, [1, 2], "{uploads:?}");
 }

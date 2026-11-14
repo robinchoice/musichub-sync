@@ -84,8 +84,10 @@ struct Counting<'a, R> {
 impl<R: Read> Read for Counting<'_, R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let n = self.inner.read(buf)?;
-        self.done += n as u64;
-        (self.progress)(self.done);
+        if n > 0 {
+            self.done += n as u64;
+            (self.progress)(self.done);
+        }
         Ok(n)
     }
 }
