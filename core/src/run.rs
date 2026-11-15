@@ -385,7 +385,7 @@ impl<H: Hub> Run<'_, H> {
                 // Only owners delete versions: the file comes back in the next round
                 Err(Error::Forbidden) => {
                     self.forget(&path);
-                    self.report.problems.push(Problem { path, message: "Darf nur der Owner löschen, die Datei kommt zurück".into() });
+                    self.report.problems.push(Problem { path, message: "Löschen darf nur, wem das Projekt gehört, die Datei kommt zurück".into() });
                     Ok(())
                 }
                 Err(e) => Err(e),
