@@ -2,7 +2,7 @@
 // The session token stays in the system keychain and on the Rust side; the popover never sees it.
 
 use std::cell::Cell;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -461,7 +461,9 @@ fn open_folder(app: AppHandle, shared: State<Shared>, path: Option<String>) {
     let folder = shared.config.lock().unwrap().folder.clone().unwrap_or_else(|| default_folder(&app));
     let _ = std::fs::create_dir_all(&folder);
     let target = match path {
-        Some(p) => folder.join(p),
+        // Only folders inside the sync folder
+        Some(p) if Path::new(&p).components().all(|c| matches!(c, Component::Normal(_))) => folder.join(p),
+        Some(_) => return,
         None => folder,
     };
     let _ = app.opener().open_path(target.to_string_lossy(), None::<&str>);

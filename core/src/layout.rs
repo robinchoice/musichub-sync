@@ -29,10 +29,22 @@ pub fn safe_name(name: &str) -> String {
         .collect();
     let trimmed = cleaned.trim().trim_end_matches(|c: char| c == '.' || c.is_whitespace()).to_string();
     if trimmed.is_empty() {
-        "Ohne Namen".to_string()
-    } else {
-        trimmed
+        return "Ohne Namen".to_string();
     }
+    let named = if reserved_on_windows(&trimmed) { format!("_{trimmed}") } else { trimmed };
+    // The scan passes over noise, so the hub's file would look deleted after its download
+    if is_noise(&named) {
+        named.replace('.', "-").replacen("~$", "~-", 1)
+    } else {
+        named
+    }
+}
+
+// CON, NUL, COM1 and the like, with or without an extension
+fn reserved_on_windows(name: &str) -> bool {
+    let base = name.split('.').next().unwrap_or(name).trim_end().to_uppercase();
+    matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((base.starts_with("COM") || base.starts_with("LPT")) && base.len() == 4 && base.ends_with(|c: char| c.is_ascii_digit()))
 }
 
 pub fn extension(file_name: &str) -> Option<String> {
@@ -190,6 +202,16 @@ mod tests {
         assert_eq!(safe_name(". ."), "Ohne Namen");
         assert_eq!(safe_name(".. \u{2003}.."), "Ohne Namen");
         assert_eq!(safe_name("EP."), "EP");
-        assert_eq!(safe_name(".Mix"), ".Mix");
+        assert_eq!(safe_name(".Mix"), "-Mix");
+        assert_eq!(safe_name("~$Demo"), "~-Demo");
+        assert_eq!(safe_name("Demos.tmp"), "Demos-tmp");
+        assert_eq!(safe_name("Desktop.ini"), "Desktop-ini");
+        assert_eq!(safe_name("Con"), "_Con");
+        assert_eq!(safe_name("aux.wav"), "_aux.wav");
+        assert_eq!(safe_name("com1"), "_com1");
+        assert_eq!(safe_name("Concert"), "Concert");
+        assert_eq!(safe_name("COM10"), "COM10");
+        let stem = Stem { id: "s".into(), name: ".Hat".into(), original_file_name: "hat.wav".into(), file_size: 1, sha256: None };
+        assert!(!is_noise(&stem_file(&stem)));
     }
 }

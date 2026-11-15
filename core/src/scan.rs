@@ -51,7 +51,12 @@ fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<DiskFile>) -> io::R
         if is_noise(&name) {
             continue;
         }
-        let meta = entry.metadata()?;
+        let meta = match entry.metadata() {
+            Ok(meta) => meta,
+            // Gone since the folder was listed, e.g. a DAW's temporary file
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
         if meta.is_dir() {
             if depth < 3 {
                 walk(root, &entry.path(), depth + 1, out)?;
