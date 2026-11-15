@@ -38,7 +38,7 @@
     <div class="it">
       <div class="grow">
         <div>Projekte</div>
-        <div class="muted small">{info.status.projects.length - info.excluded.length} von {info.status.projects.length} auf diesem Rechner</div>
+        <div class="muted small">{info.status.projects.filter((p) => !info.excluded.includes(p.id)).length} von {info.status.projects.length} auf diesem Rechner</div>
       </div>
       <button class="btn" onclick={() => (choosing = !choosing)}>{choosing ? 'Fertig' : 'Auswählen'}</button>
     </div>
