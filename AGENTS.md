@@ -8,10 +8,13 @@
 ## Checks
 
 ```sh
-cargo test -p musichub-sync-core && (cd app && bun run build)
+scripts/check-comments.sh && cargo test -p musichub-sync-core && (cd app && bun run build)
 ```
 
 The Tauri shell (`app/src-tauri`) only compiles in CI or where webkit2gtk is installed.
+
+- Regression tests: a bug fix comes with a test that fails without the fix, named after the symptom (`fn regression_…`), so nobody deletes it as redundant. No ticket numbers.
+- Comments state the rule, not its history; the history is in git. `scripts/check-comments.sh` (also in CI) blocks what a reader of the repo cannot resolve in comments under `core/` and `app/` (without `tests/`): issue and PR numbers (`#12`), paths outside the repo (`~/`, `/home/`), `.md` files the repo doesn't have, Savor, thread and session IDs. History narration ("previously", "no longer needed", "früher") only warns. Solve false alarms by rephrasing.
 
 ## Deploy
 
