@@ -45,7 +45,13 @@ pub fn scan(root: &Path, index: &[IndexEntry], now: u64) -> io::Result<Vec<DiskF
 }
 
 fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<DiskFile>) -> io::Result<()> {
-    for entry in fs::read_dir(dir)? {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        // A subfolder gone since its parent was listed, e.g. a DAW's temporary folder
+        Err(e) if depth > 0 && e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    for entry in entries {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
         if is_noise(&name) {
@@ -70,4 +76,17 @@ fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<DiskFile>) -> io::R
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn regression_folder_gone_mid_scan_keeps_the_scan_going() {
+        let root = tempfile::tempdir().unwrap();
+        let mut out = Vec::new();
+        assert!(walk(root.path(), &root.path().join("Bounces"), 1, &mut out).is_ok());
+        assert!(scan(&root.path().join("missing"), &[], 0).is_err());
+    }
 }

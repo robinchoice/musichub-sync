@@ -44,7 +44,9 @@ pub fn safe_name(name: &str) -> String {
 fn reserved_on_windows(name: &str) -> bool {
     let base = name.split('.').next().unwrap_or(name).trim_end().to_uppercase();
     matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || ((base.starts_with("COM") || base.starts_with("LPT")) && base.len() == 4 && base.ends_with(|c: char| c.is_ascii_digit()))
+        || ((base.starts_with("COM") || base.starts_with("LPT"))
+            && base.chars().count() == 4
+            && base.ends_with(|c: char| c.is_ascii_digit() || "¹²³".contains(c)))
 }
 
 pub fn extension(file_name: &str) -> Option<String> {
@@ -211,6 +213,7 @@ mod tests {
         assert_eq!(safe_name("com1"), "_com1");
         assert_eq!(safe_name("Concert"), "Concert");
         assert_eq!(safe_name("COM10"), "COM10");
+        assert_eq!(safe_name("lpt²"), "_lpt²");
         let stem = Stem { id: "s".into(), name: ".Hat".into(), original_file_name: "hat.wav".into(), file_size: 1, sha256: None };
         assert!(!is_noise(&stem_file(&stem)));
     }
