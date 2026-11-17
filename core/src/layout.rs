@@ -42,7 +42,7 @@ pub fn safe_name(name: &str) -> String {
 
 // CON, NUL, COM1 and the like, with or without an extension
 fn reserved_on_windows(name: &str) -> bool {
-    let base = name.split('.').next().unwrap_or(name).trim_end().to_uppercase();
+    let base = name.split_once('.').map_or(name, |(base, _)| base).trim_end().to_uppercase();
     matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL")
         || ((base.starts_with("COM") || base.starts_with("LPT"))
             && base.chars().count() == 4
