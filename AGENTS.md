@@ -8,7 +8,7 @@
 ## Checks
 
 ```sh
-scripts/check-comments.sh && cargo test -p musichub-sync-core && (cd app && bun run build)
+scripts/check-comments.sh && cargo test -p musichub-sync-core && (cd app && bun test && bun run build)
 ```
 
 The Tauri shell (`app/src-tauri`) only compiles in CI or where webkit2gtk is installed.
@@ -31,6 +31,7 @@ The Tauri shell (`app/src-tauri`) only compiles in CI or where webkit2gtk is ins
 - The session token lives in the system keychain (`keyring`, service `org.pleasance.musichubsync`) and never reaches the webview; commands that need the hub run on the Rust side.
 - Config (`config.json`) and the sync index (`index-<hash>.json`, one per hub and sync folder, bound to its account) live in the app's config/data folders, never in the sync folder. A new folder or hub starts with an empty index, a folder synced before gets its own back. A folder whose index belongs to another account is refused: that account's view would trash or upload what isn't its own. Logging in with another account sends the setup back to the folder step with a folder of its own.
 - Rounds run every 20 s and right after a setting changes; a setting changed mid-round ends that round after the current action (a running up- or download finishes first). There is no file watcher yet, so a bounce goes up within about 25 s.
+- Contrast and focus: `app/tests/contrast.test.js` (in `bun test`) recomputes the colour pairs from `app/src/app.css` and the avatar colours in `Popover.svelte` (text 4.5:1, focus ring 3:1). The app is dark only, so there are no light pairs. A new colour goes into `:root` and with its pair into the test in the same change. The focus ring is global in `app.css` and always visible: 2 px in `--accent` with 2 px offset; text fields, once there are any, draw it inside (`outline-offset: -2px`). In containers with `overflow: auto` or `hidden`, focusable elements keep at least 2 px to the edge, otherwise the container clips the ring.
 - German texts without gendering: no asterisks, no "jede und jeder", no generic masculine, but phrasings that need no gendering at all ("Löschen darf nur, wem das Projekt gehört" instead of "Darf nur der Owner löschen"). Identifiers stay (`owner`).
 - `MUSICHUB_URL` points the app at another hub, e.g. a local one.
 - Supply-chain cooldown: `app/bunfig.toml` keeps Bun from resolving npm releases younger than 3 days into `bun.lock` (`minimumReleaseAge`); locked versions (CI uses `--frozen-lockfile`) aren't rechecked. If a package needs a fresh version right away (security fix), add it alone to `minimumReleaseAgeExcludes`; never switch the cooldown off. Cargo has no cooldown.

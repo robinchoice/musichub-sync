@@ -58,6 +58,10 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
         working-directory: app
+      - name: Colour contrast
+        if: runner.os == 'Linux'
+        run: bun test
+        working-directory: app
       # Signed with the Developer ID certificate, notarized with the App Store Connect key, so testers
       # open the app without Gatekeeper warnings. The certificate goes into a keychain of its own.
       # Pull requests from forks get no secrets and build unsigned.
