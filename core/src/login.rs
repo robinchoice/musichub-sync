@@ -6,7 +6,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::hub::{Error, Result};
+use crate::hub::{api_base, error_message, Error, Result};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,7 +30,7 @@ pub struct Session {
 }
 
 fn api(server: &str, path: &str) -> String {
-    format!("{}/api/v1{path}", server.trim_end_matches('/'))
+    format!("{}{path}", api_base(server))
 }
 
 fn agent() -> ureq::Agent {
@@ -39,14 +39,7 @@ fn agent() -> ureq::Agent {
 
 fn error(e: ureq::Error) -> Error {
     match e {
-        ureq::Error::Status(status, response) => {
-            let message = response
-                .into_json::<serde_json::Value>()
-                .ok()
-                .and_then(|v| v.get("error").and_then(|m| m.as_str()).map(String::from))
-                .unwrap_or_default();
-            Error::Http(status, message)
-        }
+        ureq::Error::Status(status, response) => Error::Http(status, error_message(response)),
         e => Error::Network(e.to_string()),
     }
 }

@@ -81,7 +81,7 @@ struct Status {
     busy: usize,
     // The up- or download under way
     transfer: Option<TransferInfo>,
-    problems: Vec<ProblemInfo>,
+    problems: Vec<Problem>,
     projects: Vec<ProjectInfo>,
     update: Option<UpdateInfo>,
 }
@@ -110,18 +110,6 @@ impl From<&Progress> for TransferInfo {
     fn from(p: &Progress) -> Self {
         let percent = (p.total > 0).then(|| (p.done * 100 / p.total).min(100));
         TransferInfo { name: file_of(&p.path).to_string(), upload: p.upload, percent, total: p.total, file: p.file, files: p.files }
-    }
-}
-
-#[derive(Clone, Serialize)]
-struct ProblemInfo {
-    path: String,
-    message: String,
-}
-
-impl From<&Problem> for ProblemInfo {
-    fn from(p: &Problem) -> Self {
-        ProblemInfo { path: p.path.clone(), message: p.message.clone() }
     }
 }
 
@@ -250,7 +238,7 @@ fn sync_loop(app: AppHandle, kicks: Receiver<()>) {
                 match result {
                     Ok(report) => {
                         notify(&app, &report.uploaded, &report.downloaded);
-                        let mut problems: Vec<ProblemInfo> = report.problems.iter().map(Into::into).collect();
+                        let mut problems = report.problems.clone();
                         problems.extend(report.skipped.iter().filter_map(|(path, reason)| {
                             let message = match reason {
                                 SkipReason::NoUploadRights => "Keine Upload-Rechte in diesem Projekt, die Datei bleibt lokal",
@@ -259,7 +247,7 @@ fn sync_loop(app: AppHandle, kicks: Receiver<()>) {
                                 SkipReason::Unplaced if !path.contains('/') => "Liegt in keinem Projektordner, leg die Datei in einen, dann geht sie hoch",
                                 _ => return None,
                             };
-                            Some(ProblemInfo { path: path.clone(), message: message.into() })
+                            Some(Problem { path: path.clone(), message: message.into() })
                         }));
                         set_status(&app, |st| {
                             st.state = if report.busy > 0 { "syncing".into() } else { "synced".into() };
@@ -330,6 +318,17 @@ fn kick(shared: &Shared) {
     let _ = shared.kick.lock().unwrap().send(());
 }
 
+// Every setting changes here: under the lock, saved, and the running round ends for one with the new settings
+fn update_config(app: &AppHandle, shared: &Shared, f: impl FnOnce(&mut Config)) {
+    let config = {
+        let mut config = shared.config.lock().unwrap();
+        f(&mut config);
+        config.clone()
+    };
+    save_config(app, &config);
+    kick(shared);
+}
+
 #[tauri::command]
 fn status(shared: State<Shared>, app: AppHandle) -> serde_json::Value {
     let config = shared.config.lock().unwrap().clone();
@@ -346,7 +345,7 @@ fn status(shared: State<Shared>, app: AppHandle) -> serde_json::Value {
 }
 
 // Starts the device login and polls in the background; the popover hears "status" when it's done
-#[tauri::command]
+#[tauri::command(async)]
 fn login_start(app: AppHandle, shared: State<Shared>) -> Result<serde_json::Value, String> {
     let server = shared.config.lock().unwrap().server();
     let code = login::start(&server).map_err(|e| e.to_string())?;
@@ -361,9 +360,7 @@ fn login_start(app: AppHandle, shared: State<Shared>) -> Result<serde_json::Valu
                     if let Some(entry) = keyring(&server) {
                         let _ = entry.set_password(&session.token);
                     }
-                    let shared = app.state::<Shared>();
-                    let config = {
-                        let mut config = shared.config.lock().unwrap();
+                    update_config(&app, &app.state::<Shared>(), |config| {
                         let account = session.user.email.to_lowercase();
                         if config.account.as_ref().is_some_and(|a| *a != account) {
                             // Another account: the setup asks again, suggesting a folder next to the old one
@@ -374,10 +371,7 @@ fn login_start(app: AppHandle, shared: State<Shared>) -> Result<serde_json::Valu
                         }
                         config.account = Some(account);
                         config.email = Some(session.user.email);
-                        config.clone()
-                    };
-                    save_config(&app, &config);
-                    kick(&shared);
+                    });
                     return;
                 }
                 // A lost connection or a hub hiccup doesn't end the login, the code stays valid
@@ -410,8 +404,7 @@ fn open_verification(app: AppHandle, url: String) {
 // Finishes the setup or changes folder and projects later
 #[tauri::command]
 fn configure(app: AppHandle, shared: State<Shared>, folder: Option<PathBuf>, excluded: Option<Vec<String>>, paused: Option<bool>) {
-    let config = {
-        let mut config = shared.config.lock().unwrap();
+    update_config(&app, &shared, |config| {
         // Only a folder chosen by the user finishes the setup, never a suggested one
         if let Some(folder) = folder {
             config.folder = Some(folder);
@@ -423,29 +416,22 @@ fn configure(app: AppHandle, shared: State<Shared>, folder: Option<PathBuf>, exc
         if let Some(paused) = paused {
             config.paused = paused;
         }
-        config.clone()
-    };
-    save_config(&app, &config);
-    kick(&shared);
+    });
 }
 
 // One project in or out; changed under the lock, so quick clicks never undo each other
 #[tauri::command]
 fn sync_project(app: AppHandle, shared: State<Shared>, id: String, sync: bool) {
-    let config = {
-        let mut config = shared.config.lock().unwrap();
+    update_config(&app, &shared, |config| {
         config.excluded.retain(|e| *e != id);
         if !sync {
             config.excluded.push(id);
         }
-        config.clone()
-    };
-    save_config(&app, &config);
-    kick(&shared);
+    });
 }
 
-// Projects to choose from during the setup, before the first round
-#[tauri::command]
+// Projects to choose from during the setup, before the first round; off the main thread, a slow hub must not freeze the popover
+#[tauri::command(async)]
 fn projects(shared: State<Shared>) -> Result<Vec<ProjectInfo>, String> {
     let server = shared.config.lock().unwrap().server();
     let token = token(&server).ok_or("Nicht angemeldet")?;
@@ -455,7 +441,7 @@ fn projects(shared: State<Shared>) -> Result<Vec<ProjectInfo>, String> {
     Ok(state.projects.iter().map(Into::into).collect())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn activity(shared: State<Shared>) -> Result<serde_json::Value, String> {
     let server = shared.config.lock().unwrap().server();
     let token = token(&server).ok_or("Nicht angemeldet")?;
@@ -492,8 +478,7 @@ fn open_hub(app: AppHandle, shared: State<Shared>, path: Option<String>) {
 
 #[tauri::command]
 fn logout(app: AppHandle, shared: State<Shared>) {
-    let config = {
-        let mut config = shared.config.lock().unwrap();
+    update_config(&app, &shared, |config| {
         let server = config.server();
         let token = token(&server);
         if let Some(entry) = keyring(&server) {
@@ -506,10 +491,7 @@ fn logout(app: AppHandle, shared: State<Shared>) {
             });
         }
         config.email = None;
-        config.clone()
-    };
-    save_config(&app, &config);
-    kick(&shared);
+    });
 }
 
 // Downloads and installs the waiting release, then starts the new version

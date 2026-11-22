@@ -10,7 +10,7 @@ use crate::layout::{aside_path, file_of, safe_name, stem_file, stem_name, versio
 use crate::plan::{plan, Action, IndexEntry, Kind, ProjectRef, SkipReason, TrackRef};
 use crate::{index, remote, scan};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Problem {
     pub path: String,
     pub message: String,
@@ -111,6 +111,8 @@ impl<H: Hub> Syncer<H> {
                 break;
             }
             let path = action_path(&action).to_string();
+            // A skip leaves the index as it is
+            let changes = !matches!(action, Action::Skip { .. });
             match run.apply(action) {
                 Ok(()) => {}
                 Err(e @ (Error::Unauthorized | Error::Network(_))) => {
@@ -119,7 +121,9 @@ impl<H: Hub> Syncer<H> {
                 }
                 Err(e) => run.report.problems.push(Problem { path, message: e.to_string() }),
             }
-            save(&run.entries)?;
+            if changes {
+                save(&run.entries)?;
+            }
         }
 
         // Forget what is gone on both sides
@@ -308,6 +312,18 @@ impl<H: Hub> Run<'_, H> {
         }
     }
 
+    // Moves an uploaded file to `to`, where the hub's name puts it, and remembers it there
+    fn place_upload(&mut self, path: &str, to: String, kind: Kind, remote_id: &str, sha: String) -> Result<()> {
+        // Saved over an existing file: the old one comes down again in the next round
+        let target = if !self.abs(&to)?.exists() || to == path { to } else { path.to_string() };
+        // It is in the hub now: a file that can't move yet (locked, say) is remembered where it is, the next round moves it
+        let target = if self.rename(path, &target).is_ok() { target } else { path.to_string() };
+        self.forget(path);
+        self.remember(&target, kind, remote_id, Some(sha))?;
+        self.report.uploaded.push(target);
+        Ok(())
+    }
+
     fn apply(&mut self, action: Action) -> Result<()> {
         if is_transfer(&action) {
             self.file += 1;
@@ -332,25 +348,13 @@ impl<H: Hub> Run<'_, H> {
                 let (version, sha) =
                     self.upload(&path, |hub, file, sha, progress| hub.upload_version(&track_id, file, label.as_deref(), parent_version_id.as_deref(), sha, progress))?;
                 let to = format!("{}/{VERSIONS}/{}", Self::track_dir(&path), version_file(&version));
-                // Saved over an existing version: the old one comes down again in the next round
-                let target = if !self.abs(&to)?.exists() || to == path { to } else { path.clone() };
-                // It is in the hub now: a file that can't move yet (locked, say) is remembered where it is, the next round moves it
-                let target = if self.rename(&path, &target).is_ok() { target } else { path.clone() };
-                self.forget(&path);
-                self.remember(&target, Kind::Version, &version.id, Some(sha))?;
-                self.report.uploaded.push(target);
-                Ok(())
+                self.place_upload(&path, to, Kind::Version, &version.id, sha)
             }
             Action::UploadStem { path, track, name } => {
                 let track_id = self.track(&track)?;
                 let (stem, sha) = self.upload(&path, |hub, file, sha, progress| hub.upload_stem(&track_id, file, &name, sha, progress))?;
                 let to = format!("{}/{STEMS}/{}", Self::track_dir(&path), stem_file(&stem));
-                let target = if !self.abs(&to)?.exists() || to == path { to } else { path.clone() };
-                let target = if self.rename(&path, &target).is_ok() { target } else { path.clone() };
-                self.forget(&path);
-                self.remember(&target, Kind::Stem, &stem.id, Some(sha))?;
-                self.report.uploaded.push(target);
-                Ok(())
+                self.place_upload(&path, to, Kind::Stem, &stem.id, sha)
             }
             Action::ReplaceStem { path, stem_id } => {
                 let track_id = self.track_of_stem(&stem_id).unwrap_or_default();

@@ -127,7 +127,7 @@ struct Id {
 impl HttpHub {
     pub fn new(server: &str, token: &str) -> Self {
         HttpHub {
-            base: format!("{}/api/v1", server.trim_end_matches('/')),
+            base: api_base(server),
             token: token.into(),
             // A server that connects and then stays silent, or stops taking an upload, must not hold a round forever;
             // the limits apply per read and write, so uploads and downloads may take as long as they need while bytes flow
@@ -184,15 +184,21 @@ impl HttpHub {
     }
 }
 
+// The hub's API under `server`
+pub(crate) fn api_base(server: &str) -> String {
+    format!("{}/api/v1", server.trim_end_matches('/'))
+}
+
+// The `error` the hub sends with a failed request, empty without one
+pub(crate) fn error_message(response: ureq::Response) -> String {
+    response.into_json::<serde_json::Value>().ok().and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from)).unwrap_or_default()
+}
+
 fn checked(result: std::result::Result<ureq::Response, ureq::Error>) -> Result<ureq::Response> {
     match result {
         Ok(response) => Ok(response),
         Err(ureq::Error::Status(status, response)) => {
-            let message = response
-                .into_json::<serde_json::Value>()
-                .ok()
-                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
-                .unwrap_or_default();
+            let message = error_message(response);
             Err(match status {
                 401 => Error::Unauthorized,
                 403 => Error::Forbidden,
