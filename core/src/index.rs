@@ -39,6 +39,14 @@ pub fn file_for(dir: &Path, hub: &str, root: &Path) -> PathBuf {
     dir.join(format!("index-{}.json", &key[..16]))
 }
 
+// Whether the index in `file` was written for this hub and folder
+pub fn is_for(file: &Path, hub: &str, root: &Path) -> bool {
+    fs::read_to_string(file)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Stored>(&text).ok())
+        .is_some_and(|stored| stored.hub == hub && stored.root == root.to_string_lossy())
+}
+
 // Empty for a hub or folder the index doesn't belong to, an error for a folder synced for another account
 pub fn load(file: &Path, hub: &str, account: &str, root: &Path) -> io::Result<Vec<IndexEntry>> {
     let text = match fs::read_to_string(file) {

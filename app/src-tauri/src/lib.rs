@@ -350,7 +350,7 @@ fn status(shared: State<Shared>, app: AppHandle) -> serde_json::Value {
 fn login_start(app: AppHandle, shared: State<Shared>) -> Result<serde_json::Value, String> {
     let server = shared.config.lock().unwrap().server();
     let code = login::start(&server).map_err(|e| e.to_string())?;
-    let _ = app.opener().open_url(&code.verification_url, None::<&str>);
+    open_web(&app, &code.verification_url);
     let polling = code.clone();
     thread::spawn(move || {
         for _ in 0..(600 / polling.poll_interval_seconds.max(1)) {
@@ -380,6 +380,9 @@ fn login_start(app: AppHandle, shared: State<Shared>) -> Result<serde_json::Valu
                     kick(&shared);
                     return;
                 }
+                // A lost connection or a hub hiccup doesn't end the login, the code stays valid
+                Err(Error::Network(_)) => continue,
+                Err(Error::Http(status, _)) if status >= 500 => continue,
                 Err(e) => {
                     let _ = app.emit("login-failed", e.to_string());
                     return;
@@ -392,9 +395,16 @@ fn login_start(app: AppHandle, shared: State<Shared>) -> Result<serde_json::Valu
     Ok(serde_json::json!({ "userCode": code.user_code, "verificationUrl": code.verification_url }))
 }
 
+// Only web pages: the system opener would also run file paths, network shares and other schemes
+fn open_web(app: &AppHandle, url: &str) {
+    if url.starts_with("https://") || url.starts_with("http://") {
+        let _ = app.opener().open_url(url, None::<&str>);
+    }
+}
+
 #[tauri::command]
 fn open_verification(app: AppHandle, url: String) {
-    let _ = app.opener().open_url(url, None::<&str>);
+    open_web(&app, &url);
 }
 
 // Finishes the setup or changes folder and projects later
@@ -402,8 +412,10 @@ fn open_verification(app: AppHandle, url: String) {
 fn configure(app: AppHandle, shared: State<Shared>, folder: Option<PathBuf>, excluded: Option<Vec<String>>, paused: Option<bool>) {
     let config = {
         let mut config = shared.config.lock().unwrap();
+        // Only a folder chosen by the user finishes the setup, never a suggested one
         if let Some(folder) = folder {
             config.folder = Some(folder);
+            config.ready = true;
         }
         if let Some(excluded) = excluded {
             config.excluded = excluded;
@@ -411,7 +423,6 @@ fn configure(app: AppHandle, shared: State<Shared>, folder: Option<PathBuf>, exc
         if let Some(paused) = paused {
             config.paused = paused;
         }
-        config.ready = config.folder.is_some();
         config.clone()
     };
     save_config(&app, &config);
@@ -472,7 +483,11 @@ fn open_folder(app: AppHandle, shared: State<Shared>, path: Option<String>) {
 #[tauri::command]
 fn open_hub(app: AppHandle, shared: State<Shared>, path: Option<String>) {
     let server = shared.config.lock().unwrap().server();
-    let _ = app.opener().open_url(format!("{server}{}", path.unwrap_or_default()), None::<&str>);
+    // Only pages of the hub: a path not starting with '/' could change the host ("@other.example")
+    let path = path.unwrap_or_default();
+    if path.is_empty() || path.starts_with('/') {
+        open_web(&app, &format!("{server}{path}"));
+    }
 }
 
 #[tauri::command]

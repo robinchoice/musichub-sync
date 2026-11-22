@@ -124,6 +124,20 @@ fn saving_over_a_version_makes_a_new_one_on_top() {
 }
 
 #[test]
+fn regression_a_file_touched_without_new_content_does_not_go_up_again() {
+    let (index, mut disk) = synced();
+    disk[0] = file(V1, 100, OLD + 60, Some("hash-v1"));
+    disk[1] = file(DRUMS, 50, OLD + 60, Some("drums-1"));
+    assert_eq!(
+        plan(&hub(), &index, &disk, NOW),
+        vec![
+            Action::Remember { path: DRUMS.into(), kind: Kind::Stem, remote_id: "s1".into() },
+            Action::Remember { path: V1.into(), kind: Kind::Version, remote_id: "v1".into() },
+        ]
+    );
+}
+
+#[test]
 fn saving_over_a_stem_gives_it_a_new_file() {
     let (index, mut disk) = synced();
     disk[1] = file(DRUMS, 40, OLD + 60, Some("drums-cut"));

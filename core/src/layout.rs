@@ -120,12 +120,16 @@ pub fn stem_file(stem: &Stem) -> String {
     format!("{}.{}", safe_name(&stem.name), ext)
 }
 
-// "v3 Final.wav" → (3, "Final"); None for files without a version number in front
+// "v3 Final.wav" → (3, "Final"); None for files without a version number in front, also "V2Synth.wav"
 pub fn parse_version_file(file_name: &str) -> Option<(u32, String)> {
     let rest = base_name(file_name).strip_prefix(['v', 'V'])?;
     let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
     let number = digits.parse().ok()?;
-    let label = rest[digits.len()..].trim_start_matches([' ', '-', '_']).trim().to_string();
+    let after = &rest[digits.len()..];
+    if !(after.is_empty() || after.starts_with([' ', '-', '_'])) {
+        return None;
+    }
+    let label = after.trim_start_matches([' ', '-', '_']).trim().to_string();
     Some((number, label))
 }
 
@@ -172,6 +176,13 @@ mod tests {
         assert_eq!(parse_version_file("v4.wav"), Some((4, "".into())));
         assert_eq!(parse_version_file("Nachtbus Mix.wav"), None);
         assert_eq!(parse_version_file("vocals.wav"), None);
+    }
+
+    #[test]
+    fn regression_digits_inside_a_word_are_no_version_number() {
+        assert_eq!(parse_version_file("V2Synth.wav"), None);
+        assert_eq!(parse_version_file("v2.1 Mix.wav"), None);
+        assert_eq!(parse_version_file("v8_Bass.wav"), Some((8, "Bass".into())));
     }
 
     #[test]

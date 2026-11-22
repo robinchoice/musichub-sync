@@ -274,6 +274,13 @@ pub fn plan(remote: &remote::State, index: &[IndexEntry], disk: &[DiskFile], now
                     if hub_changed(e) {
                         actions.push(Action::Download { path: path.clone(), kind: x.kind, remote_id: x.remote_id.into() });
                     }
+                } else if e.sha256.is_some() && d.sha256 == e.sha256 {
+                    // Touched or written again with the same bytes: nothing new goes up, the index learns the new date
+                    actions.push(if hub_changed(e) {
+                        Action::Download { path: path.clone(), kind: x.kind, remote_id: x.remote_id.into() }
+                    } else {
+                        Action::Remember { path: path.clone(), kind: x.kind, remote_id: x.remote_id.into() }
+                    });
                 } else if !settled(d) {
                     actions.push(Action::Skip { path: path.clone(), reason: SkipReason::Busy });
                 } else if x.kind == Kind::Stem && hub_changed(e) {

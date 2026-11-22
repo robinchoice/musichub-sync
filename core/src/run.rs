@@ -53,9 +53,9 @@ impl<H: Hub> Syncer<H> {
     // The index lives in `index_dir`, one file per hub and folder
     pub fn new(hub: H, root: &Path, index_dir: &Path, account: &str) -> Self {
         let index_file = index::file_for(index_dir, &hub.origin(), root);
-        // The single index.json from before is this folder's if hub and folder match; load checks that
+        // The single index.json from before becomes this folder's only if hub and folder match; another folder's stays for it
         let legacy = index_dir.join("index.json");
-        if legacy.exists() && !index_file.exists() {
+        if !index_file.exists() && index::is_for(&legacy, &hub.origin(), root) {
             let _ = fs::rename(&legacy, &index_file);
         }
         Syncer { hub, root: root.into(), index_file, account: account.into(), state: None }
@@ -334,7 +334,8 @@ impl<H: Hub> Run<'_, H> {
                 let to = format!("{}/{VERSIONS}/{}", Self::track_dir(&path), version_file(&version));
                 // Saved over an existing version: the old one comes down again in the next round
                 let target = if !self.abs(&to)?.exists() || to == path { to } else { path.clone() };
-                self.rename(&path, &target)?;
+                // It is in the hub now: a file that can't move yet (locked, say) is remembered where it is, the next round moves it
+                let target = if self.rename(&path, &target).is_ok() { target } else { path.clone() };
                 self.forget(&path);
                 self.remember(&target, Kind::Version, &version.id, Some(sha))?;
                 self.report.uploaded.push(target);
@@ -345,7 +346,7 @@ impl<H: Hub> Run<'_, H> {
                 let (stem, sha) = self.upload(&path, |hub, file, sha, progress| hub.upload_stem(&track_id, file, &name, sha, progress))?;
                 let to = format!("{}/{STEMS}/{}", Self::track_dir(&path), stem_file(&stem));
                 let target = if !self.abs(&to)?.exists() || to == path { to } else { path.clone() };
-                self.rename(&path, &target)?;
+                let target = if self.rename(&path, &target).is_ok() { target } else { path.clone() };
                 self.forget(&path);
                 self.remember(&target, Kind::Stem, &stem.id, Some(sha))?;
                 self.report.uploaded.push(target);

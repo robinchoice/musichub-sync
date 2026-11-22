@@ -287,6 +287,25 @@ fn a_bounce_goes_up_and_takes_the_versions_name() {
     s.settled();
 }
 
+#[cfg(unix)]
+#[test]
+fn regression_a_bounce_that_cannot_take_its_versions_name_goes_up_only_once() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut s = setup(FakeHub::new());
+    s.round();
+    let bounce = "Tiefgang/Nachtbus/Versionen/Nachtbus Final.wav";
+    s.write(bounce, b"mix two");
+    let dir = s.root.join("Tiefgang/Nachtbus/Versionen");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+    s.round();
+    s.round();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(s.syncer.hub.versions().len(), 2);
+    s.round();
+    assert!(s.exists("Tiefgang/Nachtbus/Versionen/v2 Nachtbus Final.wav") && !s.exists(bounce));
+    s.settled();
+}
+
 #[test]
 fn saving_over_a_version_adds_one_and_the_old_one_comes_back() {
     let mut s = setup(FakeHub::new());
@@ -549,6 +568,24 @@ fn the_single_index_from_before_carries_over() {
     s.syncer.hub = hub;
     assert!(!dir.join("index.json").exists());
     // With the old index a deletion is known as one; without it the stem would come down again
+    fs::remove_file(s.root.join(DRUMS)).unwrap();
+    let report = s.round();
+    assert!(report.downloaded.is_empty() && !s.exists(DRUMS), "{report:?}");
+}
+
+#[test]
+fn regression_the_index_from_before_stays_with_its_folder_when_another_one_opens_first() {
+    let mut s = setup(FakeHub::new());
+    s.round();
+    let dir = s._dir.path().to_path_buf();
+    let file = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).find(|p| p.file_name().unwrap().to_string_lossy().starts_with("index-")).unwrap();
+    fs::rename(file, dir.join("index.json")).unwrap();
+    let other = Syncer::new(FakeHub::default(), &dir.join("Other"), &dir, "a@band.de");
+    drop(other);
+    assert!(dir.join("index.json").exists());
+    let hub = std::mem::replace(&mut s.syncer, Syncer::new(FakeHub::default(), &s.root, &dir, "a@band.de")).hub;
+    s.syncer.hub = hub;
+    assert!(!dir.join("index.json").exists());
     fs::remove_file(s.root.join(DRUMS)).unwrap();
     let report = s.round();
     assert!(report.downloaded.is_empty() && !s.exists(DRUMS), "{report:?}");
