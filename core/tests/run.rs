@@ -297,6 +297,10 @@ fn regression_a_bounce_that_cannot_take_its_versions_name_goes_up_only_once() {
     s.write(bounce, b"mix two");
     let dir = s.root.join("Tiefgang/Nachtbus/Versionen");
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+    // Root writes into read-only folders, so the move can't be made to fail there
+    if fs::write(dir.join("probe"), b"").is_ok() {
+        return;
+    }
     s.round();
     s.round();
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();

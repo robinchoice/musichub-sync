@@ -374,9 +374,9 @@ fn login_start(app: AppHandle, shared: State<Shared>) -> Result<serde_json::Valu
                     });
                     return;
                 }
-                // A lost connection or a hub hiccup doesn't end the login, the code stays valid
+                // A lost connection, a hub hiccup or its poll limit doesn't end the login, the code stays valid
                 Err(Error::Network(_)) => continue,
-                Err(Error::Http(status, _)) if status >= 500 => continue,
+                Err(Error::Http(status, _)) if status >= 500 || status == 429 => continue,
                 Err(e) => {
                     let _ = app.emit("login-failed", e.to_string());
                     return;
