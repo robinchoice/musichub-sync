@@ -270,11 +270,12 @@ pub fn plan(remote: &remote::State, index: &[IndexEntry], disk: &[DiskFile], now
             (Some(e), Some(d)) => {
                 done_index.insert(&e.path);
                 done_disk.insert(&d.path);
-                if unchanged(e, d) || (e.sha256.is_some() && d.sha256 == e.sha256) {
+                let same = unchanged(e, d);
+                if same || (e.sha256.is_some() && d.sha256 == e.sha256) {
                     // Unchanged, or touched or written again with the same bytes: nothing new goes up, the index learns a new date
                     if hub_changed(e) {
                         actions.push(Action::Download { path: path.clone(), kind: x.kind, remote_id: x.remote_id.into() });
-                    } else if !unchanged(e, d) {
+                    } else if !same {
                         actions.push(Action::Remember { path: path.clone(), kind: x.kind, remote_id: x.remote_id.into() });
                     }
                 } else if !settled(d) {
