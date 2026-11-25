@@ -315,7 +315,7 @@ impl<H: Hub> Run<'_, H> {
     // Moves an uploaded file to `to`, where the hub's name puts it, and remembers it there
     fn place_upload(&mut self, path: &str, to: String, kind: Kind, remote_id: &str, sha: String) -> Result<()> {
         // Saved over an existing file: the old one comes down again in the next round
-        let target = if !self.abs(&to)?.exists() || to == path { to } else { path.to_string() };
+        let target = if self.abs(&to)?.exists() { path.to_string() } else { to };
         // It is in the hub now: a file that can't move yet (locked, say) is remembered where it is, the next round moves it
         let target = if self.rename(path, &target).is_ok() { target } else { path.to_string() };
         self.forget(path);

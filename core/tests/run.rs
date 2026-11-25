@@ -8,6 +8,7 @@ use std::sync::Once;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use musichub_sync_core::hub::{Error, Hub, Result};
+use musichub_sync_core::index;
 use musichub_sync_core::plan::{Kind, SkipReason};
 use musichub_sync_core::remote::{Project, State, Stem, Track, Version};
 use musichub_sync_core::run::Syncer;
@@ -582,13 +583,11 @@ fn regression_the_index_from_before_stays_with_its_folder_when_another_one_opens
     let mut s = setup(FakeHub::new());
     s.round();
     let dir = s._dir.path().to_path_buf();
-    let file = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).find(|p| p.file_name().unwrap().to_string_lossy().starts_with("index-")).unwrap();
-    fs::rename(file, dir.join("index.json")).unwrap();
+    fs::rename(index::file_for(&dir, &s.syncer.hub.origin(), &s.root), dir.join("index.json")).unwrap();
     let other = Syncer::new(FakeHub::default(), &dir.join("Other"), &dir, "a@band.de");
     drop(other);
     assert!(dir.join("index.json").exists());
-    let hub = std::mem::replace(&mut s.syncer, Syncer::new(FakeHub::default(), &s.root, &dir, "a@band.de")).hub;
-    s.syncer.hub = hub;
+    s.syncer = Syncer::new(std::mem::take(&mut s.syncer.hub), &s.root, &dir, "a@band.de");
     assert!(!dir.join("index.json").exists());
     fs::remove_file(s.root.join(DRUMS)).unwrap();
     let report = s.round();

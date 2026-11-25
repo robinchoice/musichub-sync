@@ -39,25 +39,25 @@ pub fn file_for(dir: &Path, hub: &str, root: &Path) -> PathBuf {
     dir.join(format!("index-{}.json", &key[..16]))
 }
 
+// The index in `file` if it was written for this hub and folder
+fn read_own(file: &Path, hub: &str, root: &Path) -> io::Result<Option<Stored>> {
+    let text = match fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let stored: Stored = serde_json::from_str(&text).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    Ok((stored.hub == hub && stored.root == root.to_string_lossy()).then_some(stored))
+}
+
 // Whether the index in `file` was written for this hub and folder
 pub fn is_for(file: &Path, hub: &str, root: &Path) -> bool {
-    fs::read_to_string(file)
-        .ok()
-        .and_then(|text| serde_json::from_str::<Stored>(&text).ok())
-        .is_some_and(|stored| stored.hub == hub && stored.root == root.to_string_lossy())
+    matches!(read_own(file, hub, root), Ok(Some(_)))
 }
 
 // Empty for a hub or folder the index doesn't belong to, an error for a folder synced for another account
 pub fn load(file: &Path, hub: &str, account: &str, root: &Path) -> io::Result<Vec<IndexEntry>> {
-    let text = match fs::read_to_string(file) {
-        Ok(text) => text,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(e),
-    };
-    let stored: Stored = serde_json::from_str(&text).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    if stored.hub != hub || stored.root != root.to_string_lossy() {
-        return Ok(Vec::new());
-    }
+    let Some(stored) = read_own(file, hub, root)? else { return Ok(Vec::new()) };
     if !stored.account.is_empty() && stored.account != account {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
