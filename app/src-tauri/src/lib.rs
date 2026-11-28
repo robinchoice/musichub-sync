@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use musichub_sync_core::hub::{Error, HttpHub};
+use musichub_sync_core::hub::{Error, HttpHub, Hub};
 use musichub_sync_core::layout::file_of;
 use musichub_sync_core::login;
 use musichub_sync_core::plan::SkipReason;
@@ -203,8 +203,7 @@ fn sync_loop(app: AppHandle, kicks: Receiver<()>) {
                 syncer = None;
                 set_status(&app, |s| s.state = "login".into());
             }
-            (Some(_), _) if !config.ready => set_status(&app, |s| s.state = "setup".into()),
-            (Some(_), None) => set_status(&app, |s| s.state = "setup".into()),
+            (Some(_), folder) if !config.ready || folder.is_none() => set_status(&app, |s| s.state = "setup".into()),
             (Some(_), _) if config.paused => set_status(&app, |s| s.state = "paused".into()),
             (Some(token), Some(folder)) => {
                 let fresh = !matches!(&syncer, Some((s, f, t, _)) if *s == server && f == folder && *t == token);
@@ -238,7 +237,7 @@ fn sync_loop(app: AppHandle, kicks: Receiver<()>) {
                 match result {
                     Ok(report) => {
                         notify(&app, &report.uploaded, &report.downloaded);
-                        let mut problems = report.problems.clone();
+                        let mut problems = report.problems;
                         problems.extend(report.skipped.iter().filter_map(|(path, reason)| {
                             let message = match reason {
                                 SkipReason::NoUploadRights => "Keine Upload-Rechte in diesem Projekt, die Datei bleibt lokal",
@@ -430,22 +429,23 @@ fn sync_project(app: AppHandle, shared: State<Shared>, id: String, sync: bool) {
     });
 }
 
+// The hub of the current session, for commands outside the sync round
+fn hub(shared: &Shared) -> Result<HttpHub, String> {
+    let server = shared.config.lock().unwrap().server();
+    let token = token(&server).ok_or("Nicht angemeldet")?;
+    Ok(HttpHub::new(&server, &token))
+}
+
 // Projects to choose from during the setup, before the first round; off the main thread, a slow hub must not freeze the popover
 #[tauri::command(async)]
 fn projects(shared: State<Shared>) -> Result<Vec<ProjectInfo>, String> {
-    let server = shared.config.lock().unwrap().server();
-    let token = token(&server).ok_or("Nicht angemeldet")?;
-    let hub = HttpHub::new(&server, &token);
-    use musichub_sync_core::hub::Hub;
-    let state = hub.state().map_err(|e| e.to_string())?.unwrap_or_default();
+    let state = hub(&shared)?.state().map_err(|e| e.to_string())?.unwrap_or_default();
     Ok(state.projects.iter().map(Into::into).collect())
 }
 
 #[tauri::command(async)]
 fn activity(shared: State<Shared>) -> Result<serde_json::Value, String> {
-    let server = shared.config.lock().unwrap().server();
-    let token = token(&server).ok_or("Nicht angemeldet")?;
-    HttpHub::new(&server, &token).activity(8).map_err(|e| e.to_string())
+    hub(&shared)?.activity(8).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

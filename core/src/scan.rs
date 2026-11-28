@@ -1,6 +1,6 @@
 // What lies in the sync folder now
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::Path;
@@ -38,10 +38,10 @@ pub type Hashed = HashMap<(String, u64, u64), String>;
 pub fn scan(root: &Path, index: &[IndexEntry], now: u64, hashed: &mut Hashed) -> io::Result<Vec<DiskFile>> {
     let mut files = Vec::new();
     walk(root, root, 0, &mut files)?;
-    let known_files: HashSet<_> = index.iter().map(|e| (e.path.as_str(), e.size, e.modified)).collect();
+    let by_path: HashMap<&str, &IndexEntry> = index.iter().map(|e| (e.path.as_str(), e)).collect();
     let mut still = Hashed::new();
     for file in &mut files {
-        let known = known_files.contains(&(file.path.as_str(), file.size, file.modified));
+        let known = by_path.get(file.path.as_str()).is_some_and(|e| e.unchanged(file));
         if !known && now.saturating_sub(file.modified) >= crate::plan::SETTLE_SECS {
             let key = (file.path.clone(), file.size, file.modified);
             file.sha256 = hashed.remove(&key).or_else(|| sha256(&root.join(&file.path)).ok());

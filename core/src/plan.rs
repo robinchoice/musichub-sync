@@ -40,6 +40,13 @@ pub struct IndexEntry {
     pub sha256: Option<String>,
 }
 
+impl IndexEntry {
+    // Same size and modification time as at the last sync: the file counts as untouched and isn't hashed again
+    pub fn unchanged(&self, d: &DiskFile) -> bool {
+        self.size == d.size && self.modified == d.modified
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProjectRef {
     Existing(String),
@@ -175,7 +182,6 @@ pub fn plan(remote: &remote::State, index: &[IndexEntry], disk: &[DiskFile], now
     let by_path: HashMap<&str, &IndexEntry> = index.iter().map(|e| (e.path.as_str(), e)).collect();
     let by_id: HashMap<&str, &IndexEntry> = index.iter().map(|e| (e.remote_id.as_str(), e)).collect();
     let on_disk: HashMap<&str, &DiskFile> = disk.iter().map(|d| (d.path.as_str(), d)).collect();
-    let unchanged = |e: &IndexEntry, d: &DiskFile| e.size == d.size && e.modified == d.modified;
     let settled = |d: &DiskFile| now.saturating_sub(d.modified) >= SETTLE_SECS;
 
     // Disk paths and index entries already dealt with
@@ -250,7 +256,7 @@ pub fn plan(remote: &remote::State, index: &[IndexEntry], disk: &[DiskFile], now
 
         // Renamed in the hub: the local file follows, unless it changed or something already sits at the new name
         if let Some(e) = by_id.get(x.remote_id).copied().filter(|e| e.path != *path && !done_index.contains(e.path.as_str())) {
-            if d.is_none() && on_disk.get(e.path.as_str()).is_some_and(|old| unchanged(e, old)) {
+            if d.is_none() && on_disk.get(e.path.as_str()).is_some_and(|old| e.unchanged(old)) {
                 done_index.insert(&e.path);
                 done_disk.insert(&e.path);
                 actions.push(Action::MoveLocal { from: e.path.clone(), to: path.clone() });
@@ -270,7 +276,7 @@ pub fn plan(remote: &remote::State, index: &[IndexEntry], disk: &[DiskFile], now
             (Some(e), Some(d)) => {
                 done_index.insert(&e.path);
                 done_disk.insert(&d.path);
-                let same = unchanged(e, d);
+                let same = e.unchanged(d);
                 if same || (e.sha256.is_some() && d.sha256 == e.sha256) {
                     // Unchanged, or touched or written again with the same bytes: nothing new goes up, the index learns a new date
                     if hub_changed(e) {
@@ -334,7 +340,7 @@ pub fn plan(remote: &remote::State, index: &[IndexEntry], disk: &[DiskFile], now
         }
         if let Some(e) = by_path.get(d.path.as_str()).filter(|e| !done_index.contains(e.path.as_str())) {
             done_index.insert(&e.path);
-            if unchanged(e, d) {
+            if e.unchanged(d) {
                 // Gone from the hub
                 actions.push(Action::TrashLocal { path: d.path.clone() });
                 continue;

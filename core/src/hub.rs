@@ -156,8 +156,7 @@ impl HttpHub {
     }
 
     // Straight to S3 with the presigned URL; size and type are part of the signature
-    fn put_file(&self, upload: &UploadUrl, file: &Path, progress: &dyn Fn(u64)) -> Result<()> {
-        let size = file.metadata()?.len();
+    fn put_file(&self, upload: &UploadUrl, file: &Path, size: u64, progress: &dyn Fn(u64)) -> Result<()> {
         let response = self
             .agent
             .put(&upload.upload_url)
@@ -177,10 +176,14 @@ impl HttpHub {
         self.send_json("POST", "/auth/logout", json!({})).map(|_| ())
     }
 
-    fn upload_url(&self, path: &str, file: &Path) -> Result<UploadUrl> {
+    // Gets an upload URL from `path` and puts the file there; returns the body that registers it, and its size
+    fn stage(&self, path: &str, file: &Path, sha256: &str, progress: &dyn Fn(u64)) -> Result<(serde_json::Value, u64)> {
         let name = file_name(file);
-        let body = json!({ "fileName": name, "mimeType": mime_of(&name), "fileSize": file.metadata()?.len() });
-        parse(self.send_json("POST", path, body)?)
+        let mime = mime_of(&name);
+        let size = file.metadata()?.len();
+        let upload: UploadUrl = parse(self.send_json("POST", path, json!({ "fileName": name, "mimeType": mime, "fileSize": size }))?)?;
+        self.put_file(&upload, file, size, progress)?;
+        Ok((json!({ "fileKey": upload.file_key, "originalFileName": name, "mimeType": mime, "sha256": sha256 }), size))
     }
 }
 
@@ -266,16 +269,8 @@ impl Hub for HttpHub {
     }
 
     fn upload_version(&self, track_id: &str, file: &Path, label: Option<&str>, parent_id: Option<&str>, sha256: &str, progress: &dyn Fn(u64)) -> Result<remote::Version> {
-        let upload = self.upload_url(&format!("/versions/track/{track_id}/upload-url"), file)?;
-        self.put_file(&upload, file, progress)?;
-        let name = file_name(file);
-        let mut body = json!({
-            "fileKey": upload.file_key,
-            "originalFileName": name,
-            "mimeType": mime_of(&name),
-            "fileSize": file.metadata()?.len(),
-            "sha256": sha256,
-        });
+        let (mut body, size) = self.stage(&format!("/versions/track/{track_id}/upload-url"), file, sha256, progress)?;
+        body["fileSize"] = json!(size);
         if let Some(label) = label {
             body["label"] = json!(label);
         }
@@ -286,25 +281,14 @@ impl Hub for HttpHub {
     }
 
     fn upload_stem(&self, track_id: &str, file: &Path, name: &str, sha256: &str, progress: &dyn Fn(u64)) -> Result<remote::Stem> {
-        let upload = self.upload_url(&format!("/stems/track/{track_id}/upload-url"), file)?;
-        self.put_file(&upload, file, progress)?;
-        let file_name = file_name(file);
-        let body = json!({
-            "fileKey": upload.file_key,
-            "name": name,
-            "originalFileName": file_name,
-            "mimeType": mime_of(&file_name),
-            "fileSize": file.metadata()?.len(),
-            "sha256": sha256,
-        });
+        let (mut body, size) = self.stage(&format!("/stems/track/{track_id}/upload-url"), file, sha256, progress)?;
+        body["name"] = json!(name);
+        body["fileSize"] = json!(size);
         field(self.send_json("POST", &format!("/stems/track/{track_id}"), body)?, "stem")
     }
 
     fn replace_stem(&self, track_id: &str, stem_id: &str, file: &Path, sha256: &str, progress: &dyn Fn(u64)) -> Result<remote::Stem> {
-        let upload = self.upload_url(&format!("/stems/track/{track_id}/upload-url"), file)?;
-        self.put_file(&upload, file, progress)?;
-        let name = file_name(file);
-        let body = json!({ "fileKey": upload.file_key, "originalFileName": name, "mimeType": mime_of(&name), "sha256": sha256 });
+        let (body, _) = self.stage(&format!("/stems/track/{track_id}/upload-url"), file, sha256, progress)?;
         field(self.send_json("POST", &format!("/stems/{stem_id}/replace"), body)?, "stem")
     }
 
