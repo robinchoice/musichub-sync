@@ -99,6 +99,21 @@ fn a_new_bounce_in_versionen_becomes_a_new_version() {
 }
 
 #[test]
+fn regression_a_folder_differing_only_in_case_goes_into_the_existing_project_and_track() {
+    let (index, mut disk) = synced();
+    disk.push(file("tiefgang/nachtbus/Versionen/Nachtbus Final.wav", 120, OLD, Some("x")));
+    assert_eq!(
+        plan(&hub(), &index, &disk, NOW),
+        vec![Action::UploadVersion {
+            path: "tiefgang/nachtbus/Versionen/Nachtbus Final.wav".into(),
+            track: TrackRef::Existing("t1".into()),
+            label: Some("Nachtbus Final".into()),
+            parent_version_id: None,
+        }]
+    );
+}
+
+#[test]
 fn a_bounce_still_being_written_waits() {
     let (index, mut disk) = synced();
     disk.push(file("Tiefgang/Nachtbus/Versionen/Nachtbus Final.wav", 120, NOW - 1, None));

@@ -439,6 +439,18 @@ fn deleting_locally_empties_it_from_the_hub_unless_only_the_owner_may() {
 }
 
 #[test]
+fn regression_a_missing_sync_folder_trashes_nothing_in_the_hub() {
+    let mut s = setup(FakeHub::new());
+    s.round();
+    fs::remove_dir_all(&s.root).unwrap();
+    assert!(s.syncer.run(&[], later(), || false, |_| {}).is_err());
+    assert!(!s.root.exists());
+    let state = s.syncer.hub.state.borrow();
+    assert_eq!(state.projects[0].tracks[0].versions.len(), 1);
+    assert_eq!(state.projects[0].tracks[0].stems.len(), 1);
+}
+
+#[test]
 fn deleted_in_the_hub_leaves_the_folder() {
     let mut s = setup(FakeHub::new());
     s.round();

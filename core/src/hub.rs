@@ -203,7 +203,9 @@ fn checked(result: std::result::Result<ureq::Response, ureq::Error>) -> Result<u
                 401 => Error::Unauthorized,
                 403 => Error::Forbidden,
                 409 => Error::Conflict(message),
-                413 | 429 | 507 => Error::Full(message),
+                // A rate limit ends the round like a lost connection; the next round tries again
+                429 => Error::Network("Der Hub bremst gerade, zu viele Anfragen".into()),
+                413 | 507 => Error::Full(message),
                 _ => Error::Http(status, message),
             })
         }
@@ -316,5 +318,16 @@ impl Hub for HttpHub {
             Kind::Stem => format!("/stems/{id}"),
         };
         checked(self.request("DELETE", &path).call()).map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn regression_a_rate_limit_ends_the_round_instead_of_failing_every_file() {
+        let response = ureq::Response::new(429, "Too Many Requests", "").unwrap();
+        assert!(matches!(checked(Err(ureq::Error::Status(429, response))), Err(Error::Network(_))));
     }
 }

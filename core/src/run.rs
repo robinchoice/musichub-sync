@@ -47,6 +47,7 @@ pub struct Syncer<H: Hub> {
     account: String,
     // The last state the hub sent; it answers "unchanged" without one
     state: Option<remote::State>,
+    hashed: scan::Hashed,
 }
 
 impl<H: Hub> Syncer<H> {
@@ -58,7 +59,7 @@ impl<H: Hub> Syncer<H> {
         if !index_file.exists() && index::is_for(&legacy, &hub.origin(), root) {
             let _ = fs::rename(&legacy, &index_file);
         }
-        Syncer { hub, root: root.into(), index_file, account: account.into(), state: None }
+        Syncer { hub, root: root.into(), index_file, account: account.into(), state: None, hashed: scan::Hashed::new() }
     }
 
     pub fn state(&self) -> Option<&remote::State> {
@@ -81,11 +82,15 @@ impl<H: Hub> Syncer<H> {
             full.projects.into_iter().filter(|p| !excluded.contains(&p.id)).partition(|p| excluded_dirs.contains(&safe_name(&p.name).to_lowercase()));
         let remote = remote::State { projects };
 
-        fs::create_dir_all(&self.root)?;
         let mut entries: Vec<IndexEntry> = index::load(&self.index_file, &self.hub.origin(), &self.account, &self.root)?;
+        // A synced folder gone (a drive not mounted, a folder moved) would look like every file deleted here
+        if !entries.is_empty() && !self.root.exists() {
+            return Err(Error::Io(io::Error::new(io::ErrorKind::NotFound, format!("Der Ordner {} fehlt, ist das Laufwerk verbunden?", self.root.display()))));
+        }
+        fs::create_dir_all(&self.root)?;
         let kept: Vec<IndexEntry> = entries.iter().filter(|e| outside(&e.path)).cloned().collect();
         entries.retain(|e| !outside(&e.path));
-        let disk: Vec<_> = scan::scan(&self.root, &entries, now)?.into_iter().filter(|d| !outside(&d.path)).collect();
+        let disk: Vec<_> = scan::scan(&self.root, &entries, now, &mut self.hashed)?.into_iter().filter(|d| !outside(&d.path)).collect();
 
         let actions = plan(&remote, &entries, &disk, now);
         let files = actions.iter().filter(|a| is_transfer(a)).count();

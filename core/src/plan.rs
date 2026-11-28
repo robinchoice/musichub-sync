@@ -362,7 +362,9 @@ fn track_of<'a>(remote: &'a remote::State, version_id: &str) -> &'a str {
 
 fn upload_new(remote: &remote::State, d: &DiskFile) -> Action {
     let parts: Vec<&str> = d.path.split('/').collect();
-    let project = remote.projects.iter().find(|p| safe_name(&p.name) == parts[0]);
+    // Without case, like the collisions: "mix" is the folder of the project "Mix", not a new one
+    let same = |name: &str, dir: &str| safe_name(name).to_lowercase() == dir.to_lowercase();
+    let project = remote.projects.iter().find(|p| same(&p.name, parts[0]));
     if parts.len() >= 2 && project.is_some_and(|p| !p.can_upload) {
         return Action::Skip { path: d.path.clone(), reason: SkipReason::NoUploadRights };
     }
@@ -371,7 +373,7 @@ fn upload_new(remote: &remote::State, d: &DiskFile) -> Action {
         None => ProjectRef::New(parts[0].into()),
     };
     let track_ref = |dir: &str| {
-        match project.and_then(|p| p.tracks.iter().find(|t| safe_name(&t.name) == dir)) {
+        match project.and_then(|p| p.tracks.iter().find(|t| same(&t.name, dir))) {
             Some(t) => TrackRef::Existing(t.id.clone()),
             None => TrackRef::New { project: project_ref(), name: dir.into() },
         }
